@@ -1,0 +1,15 @@
+{
+  "CollectionMissing": {
+    "name": "电影合集查缺",
+    "description": "扫描 Emby/Jellyfin 媒体库中的电影合集（BoxSet），与 TMDB 合集全量片单对比，列出缺失电影供手动确认订阅。",
+    "labels": "媒体库,合集,查缺,Emby,Jellyfin",
+    "version": "1.0.0",
+    "icon": "CollectionMissing.png",
+    "author": "FUJIWARESHINE",
+    "system_version": ">=2.15.0",
+    "level": 2,
+    "history": {
+      "v1.0.0": "首个版本：支持 Emby 与 Jellyfin 电影合集缺失扫描，详情页手动确认订阅/忽略/删除/恢复，提供按合集批量订阅与远程命令 /collection_missing。"
+    }
+  }
+}
