@@ -1,4 +1,4 @@
-# 电影合集查缺
+# Emby 电影合集缺集订阅
 
 扫描 Emby / Jellyfin 媒体库中的**电影合集（BoxSet / Collection）**，与 TMDB 合集全量片单做差集，把**缺失的电影列出来给你看**，由你逐部或按合集批量决定是否订阅。
 
@@ -38,7 +38,7 @@
    ```
    https://github.com/FUJIWARESHINE/MoviePilot-Plugins
    ```
-3. 在市场中找到「电影合集查缺」安装
+3. 在市场中找到「Emby 电影合集缺集订阅」安装
 
 ### 方式二：上传 zip
 

@@ -49,7 +49,7 @@ class CollectionMissing(_PluginBase):
     """扫描媒体库中的电影合集（BoxSet），与 TMDB 合集全量片单对比，列出缺失电影供手动确认订阅"""
 
     # 插件名称
-    plugin_name = "电影合集查缺"
+    plugin_name = "Emby 电影合集缺集订阅"
     # 插件描述
     plugin_desc = "扫描 Emby/Jellyfin 媒体库中的电影合集，对比 TMDB 合集全量片单，列出缺失电影供手动确认订阅"
     # 插件图标
@@ -127,13 +127,13 @@ class CollectionMissing(_PluginBase):
                 "min_vote": self._min_vote,
                 "clear": False,
             })
-            logger.info("已清空电影合集查缺的检查记录")
+            logger.info("已清空合集查缺的检查记录")
 
         self.stop_service()
 
         if self._onlyonce:
             self._scheduler = BackgroundScheduler(timezone=settings.TZ)
-            logger.info("电影合集查缺服务启动，立即运行一次")
+            logger.info("合集查缺服务启动，立即运行一次")
             self._scheduler.add_job(
                 func=self.__scan,
                 trigger="date",
@@ -231,7 +231,7 @@ class CollectionMissing(_PluginBase):
             return [
                 {
                     "id": "CollectionMissing",
-                    "name": "电影合集查缺",
+                    "name": "Emby 电影合集缺集订阅",
                     "trigger": CronTrigger.from_crontab(self._cron),
                     "func": self.__scan,
                     "kwargs": {},
@@ -259,12 +259,12 @@ class CollectionMissing(_PluginBase):
         """扫描所有已配置媒体服务器的合集缺失电影，只记录不订阅"""
         with self._lock:
             if not self._mediaservers:
-                logger.warning("电影合集查缺：未配置媒体服务器，跳过扫描")
+                logger.warning("合集查缺：未配置媒体服务器，跳过扫描")
                 return
 
             services = self._mediaserver_helper.get_services(name_filters=self._mediaservers)
             if not services:
-                logger.warning("电影合集查缺：获取媒体服务器实例失败，请检查配置")
+                logger.warning("合集查缺：获取媒体服务器实例失败，请检查配置")
                 return
 
             history: dict = self.get_data("history") or {}
@@ -279,23 +279,23 @@ class CollectionMissing(_PluginBase):
 
             for server_name, service in services.items():
                 if service.instance.is_inactive():
-                    logger.warning(f"电影合集查缺：媒体服务器 {server_name} 未连接，跳过")
+                    logger.warning(f"合集查缺：媒体服务器 {server_name} 未连接，跳过")
                     continue
                 if service.type not in SUPPORTED_SERVERS:
-                    logger.warning(f"电影合集查缺：媒体服务器 {server_name} 类型 {service.type} 不支持，跳过")
+                    logger.warning(f"合集查缺：媒体服务器 {server_name} 类型 {service.type} 不支持，跳过")
                     continue
                 try:
                     found, present = self.__scan_server(server_name, service, details)
                     new_found.extend(found)
                     present_keys.update(present)
                 except Exception as e:
-                    logger.error(f"电影合集查缺：扫描媒体服务器 {server_name} 时出错: {e}")
+                    logger.error(f"合集查缺：扫描媒体服务器 {server_name} 时出错: {e}")
 
             # 已补齐自动消单：待处理记录对应的电影已入库则删除
             for key in list(details.keys()):
                 record = details[key]
                 if record.get("status") == STATUS_PENDING and key in present_keys:
-                    logger.info(f"电影合集查缺：{record.get('title')} 已入库，自动移除待处理记录")
+                    logger.info(f"合集查缺：{record.get('title')} 已入库，自动移除待处理记录")
                     del details[key]
 
             history["details"] = details
@@ -313,14 +313,14 @@ class CollectionMissing(_PluginBase):
                     text_lines.append("请到插件详情页确认是否订阅")
                 self.post_message(
                     mtype=NotificationType.SiteMessage,
-                    title="【电影合集查缺】",
+                    title="【Emby 电影合集缺集订阅】",
                     text="\n".join(text_lines),
                 )
 
             if new_found:
-                logger.info(f"电影合集查缺：扫描完成，新增 {len(new_found)} 部缺失电影待处理")
+                logger.info(f"合集查缺：扫描完成，新增 {len(new_found)} 部缺失电影待处理")
             else:
-                logger.info("电影合集查缺：扫描完成，无新增缺失")
+                logger.info("合集查缺：扫描完成，无新增缺失")
 
     def __scan_server(
         self, server_name: str, service, details: Dict[str, dict]
@@ -1415,4 +1415,4 @@ class CollectionMissing(_PluginBase):
                     self._event.clear()
                 self._scheduler = None
         except Exception as e:
-            logger.error(f"电影合集查缺停止服务异常: {e}")
+            logger.error(f"合集查缺停止服务异常: {e}")
