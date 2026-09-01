@@ -11,5 +11,18 @@
     "history": {
       "v1.0.0": "首个版本：支持 Emby 与 Jellyfin 电影合集缺失扫描，详情页手动确认订阅/忽略/删除/恢复，提供按合集批量订阅与远程命令 /collection_missing。"
     }
+  },
+  "MuxueSignin": {
+    "name": "慕雪自动签到",
+    "description": "自动签到慕雪阁 (pt.muxuege.org) 与 Depth Studio (dstudio.me) 两个 NexusPHP 站点，Cookie 从 MoviePilot 站点管理读取。",
+    "labels": "签到,PT,NexusPHP,慕雪阁,Depth Studio",
+    "version": "1.0.0",
+    "icon": "MuxueSignin.png",
+    "author": "FUJIWARESHINE",
+    "system_version": ">=2.15.0",
+    "level": 2,
+    "history": {
+      "v1.0.0": "首个版本：慕雪阁 + Depth Studio 双站签到，GET 探测优先（NexusPHP 关闭验证码时 GET 自动签到），识别验证码并提示手动签到，单站失败隔离。"
+    }
   }
 }

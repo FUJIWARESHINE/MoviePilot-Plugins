@@ -68,3 +68,57 @@
 ## 许可
 
 仅供个人使用。
+
+---
+
+## 慕雪自动签到
+
+自动签到慕雪阁 (pt.muxuege.org) 与 Depth Studio (dstudio.me) 两个 NexusPHP 站点的 PT 签到插件。Cookie 直接从 MoviePilot「站点管理」读取，不在插件内另行配置。
+
+> 适用于 MoviePilot **v2.15.0+**。
+
+### 站点
+
+| 站点 | 域名 | NexusPHP 签到入口 |
+|---|---|---|
+| 慕雪阁 | `pt.muxuege.org` | `attendance.php` |
+| Depth Studio | `dstudio.me` | `attendance.php` |
+
+### 特性
+
+- 双站支持，每个站点独立开关与独立历史
+- **GET 探测优先**：NexusPHP 在关闭签到验证码时，GET 一次 `attendance.php` 即自动签到，避免无脑 POST
+- **验证码识别**：检测到 `imagehash` / `imagestring` 表单时直接报错「请手动签到」，不会盲提交
+- 单站签到失败隔离：一个站挂了不影响另一个站
+- 详情页按站点显示最近一次结果（成功、Cookie 失效、验证码、网络错误等），历史合并按时间倒序展示
+- 远程命令 `/muxue_sign` 立即签到全部启用站点
+
+### 安装
+
+1. MoviePilot → 插件 → 仓库管理 → 添加仓库 `https://github.com/FUJIWARESHINE/MoviePilot-Plugins`
+2. 在市场中找到「慕雪自动签到」安装
+3. 启用插件前请确认「站点管理」中已配置好两个站点的 Cookie（站点域名分别为 `pt.muxuege.org` 与 `dstudio.me`）
+
+### 配置
+
+| 项 | 说明 |
+|---|---|
+| 启用插件 | 总开关 |
+| 发送通知 | 完成后通过系统通知渠道推送结果 |
+| 立即运行一次 | 保存后立刻跑一次签到 |
+| 执行周期 | 定时任务 cron 表达式，默认 `0 9 * * *` |
+| 清空签到记录 | 保存后立即清空所有站点的签到历史 |
+| 签到 慕雪阁 | 该站点独立开关 |
+| 慕雪阁 站点管理匹配域名 | 一般保持 `pt.muxuege.org` 即可 |
+| 签到 Depth Studio | 该站点独立开关 |
+| Depth Studio 站点管理匹配域名 | 一般保持 `dstudio.me` 即可 |
+
+### 注意
+
+- `dstudio.me` 在国内部分网络环境存在 DNS 污染，请确认部署 MoviePilot 的环境能直连该站，否则单站会持续报「网络错误」（不影响慕雪阁）
+- 开启签到验证码的站点无法自动签到，请打开浏览器手动签到一次；之后只要验证码开关状态不变，本插件即可继续正常工作
+
+### 致谢
+
+- [bfjy2024/MoviePilot-Plugins](https://github.com/bfjy2024/MoviePilot-Plugins) — `hongdoubaosignin` 提供基础架构
+- [xiaomlove/nexusphp](https://github.com/xiaomlove/nexusphp) — 提供 `attendance.php` 与中文语言包源码比对
