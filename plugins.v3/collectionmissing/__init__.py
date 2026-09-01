@@ -10,14 +10,14 @@ from app import schemas
 from app.chain.media import MediaChain
 from app.chain.subscribe import SubscribeChain
 from app.chain.tmdb import TmdbChain
-from app.core.config import settings
-from app.core.event import eventmanager, Event
-from app.db.subscribe_oper import SubscribeOper
-from app.helper.mediaserver import MediaServerHelper
-from app.log import logger
+from app.db.oper.subscribe import SubscribeOper
 from app.plugins import _PluginBase
 from app.schemas import NotificationType
-from app.schemas.types import EventType, MediaType
+from app.schemas.types import EventType, MediaSource, MediaType
+from app.sdk.config import settings
+from app.sdk.events import eventmanager, Event
+from app.sdk.logging import logger
+from app.sdk.services import MediaServerHelper
 
 # 支持扫描的媒体服务器类型
 SUPPORTED_SERVERS: Tuple[str, ...] = ("emby", "jellyfin")
@@ -44,6 +44,54 @@ STATUS_TEXT: Dict[str, str] = {
 DEFAULT_POSTER = "/assets/no-image-CweBJ8Ee.jpeg"
 POSTER_BASE = "https://image.tmdb.org/t/p/w500"
 
+# 本插件按 TMDB 合集维度工作，所有记录都属于 TMDB 这一内置来源
+RECORD_MEDIA_SOURCE = MediaSource.TMDB
+
+# 插件动作端点的输出模型：显式选择宿主统一 envelope，只回传成功状态与展示
+# 文案，业务数据恒为空。get_api() 注册的路由不会被宿主隐式包装，因此必须自己
+# 声明与返回结构一致的 response_model。
+PluginActionResponse = schemas.Response[dict]
+
+
+def tmdb_media_id(tmdb_id: Any) -> Optional[str]:
+    """把任意来源的 TMDB ID 规范为 V3 媒体身份要求的非空字符串。
+
+    V3 的 media_source 与 media_id 是不可拆分的身份对，空白和字符串 "0" 都不是
+    有效身份；因此这里统一归一化，避免无效 ID 进入订阅链路或插件数据。
+    """
+    if tmdb_id is None:
+        return None
+    media_id = str(tmdb_id).strip()
+    if not media_id or media_id == "0":
+        return None
+    return media_id
+
+
+def resolve_record_identity(record: dict) -> Optional[str]:
+    """读取记录的规范媒体 ID，兼容尚未写入统一身份字段的存量数据。
+
+    迁移顺序遵循官方要求：先验证统一字段，无效时再回退到历史单源字段 tmdb_id，
+    并保证可重复执行。
+    """
+    media_id = tmdb_media_id(record.get("media_id"))
+    if media_id:
+        return media_id
+    return tmdb_media_id(record.get("tmdb_id"))
+
+
+def ensure_record_identity(record: dict) -> Optional[str]:
+    """为记录补齐 V3 统一身份字段，成功返回规范媒体 ID，失败返回 None。
+
+    只有取得完整有效身份后才写入新字段，绝不先删旧字段；tmdb_id 作为 TMDB 合集
+    维度的单源辅助字段保留，用于拼接合集记录键。
+    """
+    media_id = resolve_record_identity(record)
+    if not media_id:
+        return None
+    record["media_source"] = RECORD_MEDIA_SOURCE.value
+    record["media_id"] = media_id
+    return media_id
+
 
 class CollectionMissing(_PluginBase):
     """扫描媒体库中的电影合集（BoxSet），与 TMDB 合集全量片单对比，列出缺失电影供手动确认订阅"""
@@ -54,8 +102,8 @@ class CollectionMissing(_PluginBase):
     plugin_desc = "扫描 Emby/Jellyfin 媒体库中的电影合集，对比 TMDB 合集全量片单，列出缺失电影供手动确认订阅"
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/FUJIWARESHINE/MoviePilot-Plugins/main/icons/CollectionMissing.png"
-    # 插件版本，必须与 package.v2.json 中保持一致
-    plugin_version = "1.2.0"
+    # 插件版本，必须与 package.v3.json 中保持一致
+    plugin_version = "2.0.0"
     # 插件作者
     plugin_author = "FUJIWARESHINE"
     # 作者主页
@@ -107,6 +155,9 @@ class CollectionMissing(_PluginBase):
             except (TypeError, ValueError):
                 self._min_vote = 0.0
             self._clear = bool(config.get("clear", False))
+
+        # 存量数据迁移：为 v1.x 遗留的仅含 tmdb_id 的记录补齐 V3 统一身份字段
+        self.__migrate_history_identity()
 
         # 构建媒体库选项（供表单多选）
         if self._mediaservers:
@@ -179,49 +230,65 @@ class CollectionMissing(_PluginBase):
                 "path": "/subscribe",
                 "endpoint": self.subscribe,
                 "methods": ["GET"],
+                "auth": "bear",
                 "summary": "订阅缺失电影",
+                "response_model": PluginActionResponse,
             },
             {
                 "path": "/ignore",
                 "endpoint": self.ignore,
                 "methods": ["GET"],
+                "auth": "bear",
                 "summary": "忽略缺失电影",
+                "response_model": PluginActionResponse,
             },
             {
                 "path": "/restore",
                 "endpoint": self.restore,
                 "methods": ["GET"],
+                "auth": "bear",
                 "summary": "恢复缺失电影为待处理",
+                "response_model": PluginActionResponse,
             },
             {
                 "path": "/delete",
                 "endpoint": self.delete,
                 "methods": ["GET"],
+                "auth": "bear",
                 "summary": "删除检查记录",
+                "response_model": PluginActionResponse,
             },
             {
                 "path": "/subscribe_collection",
                 "endpoint": self.subscribe_collection,
                 "methods": ["GET"],
+                "auth": "bear",
                 "summary": "订阅某合集全部缺失电影",
+                "response_model": PluginActionResponse,
             },
             {
                 "path": "/ignore_collection",
                 "endpoint": self.ignore_collection,
                 "methods": ["GET"],
+                "auth": "bear",
                 "summary": "忽略某合集全部缺失电影",
+                "response_model": PluginActionResponse,
             },
             {
                 "path": "/set_filter",
                 "endpoint": self.set_filter,
                 "methods": ["GET"],
+                "auth": "bear",
                 "summary": "切换页面筛选",
+                "response_model": PluginActionResponse,
             },
             {
                 "path": "/clear",
                 "endpoint": self.clear_records,
                 "methods": ["GET"],
+                "auth": "bear",
                 "summary": "清空检查记录",
+                "response_model": PluginActionResponse,
             },
         ]
 
@@ -414,7 +481,12 @@ class CollectionMissing(_PluginBase):
                 )
                 continue
 
-            unique = f"{server_name}:{collection_id}:{movie.tmdb_id}"
+            media_id = tmdb_media_id(movie.tmdb_id)
+            if not media_id:
+                # 没有有效 TMDB 身份的电影无法参与订阅，直接跳过
+                continue
+
+            unique = f"{server_name}:{collection_id}:{media_id}"
             record = details.get(unique)
             if record:
                 # 已有记录：只刷新检查时间，不覆盖用户决策
@@ -425,6 +497,9 @@ class CollectionMissing(_PluginBase):
                 "server": server_name,
                 "collection_id": collection_id,
                 "collection_name": boxset_name,
+                # V3 统一媒体身份；tmdb_id 作为 TMDB 合集维度的单源辅助字段保留
+                "media_source": RECORD_MEDIA_SOURCE.value,
+                "media_id": media_id,
                 "tmdb_id": movie.tmdb_id,
                 "title": movie.title or "未知",
                 "year": str(movie.year or ""),
@@ -561,7 +636,9 @@ class CollectionMissing(_PluginBase):
 
             movie_tmdb_id = int(movie_tmdb_str)
             mediainfo = self._media_chain.recognize_media(
-                mtype=MediaType.MOVIE, tmdbid=movie_tmdb_id
+                mtype=MediaType.MOVIE,
+                media_source=MediaSource.TMDB,
+                media_id=str(movie_tmdb_id),
             )
             if not mediainfo:
                 return None
@@ -591,6 +668,40 @@ class CollectionMissing(_PluginBase):
         return None
 
     # ================================================================
+    # 存量数据迁移
+    # ================================================================
+
+    def __migrate_history_identity(self) -> int:
+        """为存量记录补齐 V3 统一媒体身份字段，返回本次发生变更的记录数。
+
+        迁移必须可重复执行：统一字段已有效时只补来源、不再改写 ID；只有从历史
+        单源字段 tmdb_id 取得有效身份后才写入新字段，绝不先删除旧数据再保存。
+        找不到有效回填来源时保留原记录，避免为了“清理”而丢数据。
+        """
+        history: dict = self.get_data("history") or {}
+        details = history.get("details") if isinstance(history, dict) else None
+        if not isinstance(details, dict) or not details:
+            return 0
+
+        migrated = 0
+        for record in details.values():
+            if not isinstance(record, dict):
+                continue
+            if tmdb_media_id(record.get("media_id")):
+                # 统一身份已有效，仅保证来源字段与当前来源一致
+                if record.get("media_source") != RECORD_MEDIA_SOURCE.value:
+                    record["media_source"] = RECORD_MEDIA_SOURCE.value
+                    migrated += 1
+                continue
+            if ensure_record_identity(record):
+                migrated += 1
+
+        if migrated:
+            self.__save_details(details)
+            logger.info(f"已为 {migrated} 条存量记录补齐 V3 统一媒体身份")
+        return migrated
+
+    # ================================================================
     # 订阅
     # ================================================================
 
@@ -598,11 +709,11 @@ class CollectionMissing(_PluginBase):
         """按记录订阅缺失电影，返回（是否成功, 消息）"""
         title = record.get("title")
         year = str(record.get("year") or "")
-        tmdb_id = record.get("tmdb_id")
-        if not title or not tmdb_id:
-            return False, "记录信息不完整"
+        media_id = ensure_record_identity(record)
+        if not title or not media_id:
+            return False, "记录信息不完整或缺少有效媒体身份"
 
-        if self._subscribe_oper.exists(tmdbid=tmdb_id):
+        if self._subscribe_oper.exists(RECORD_MEDIA_SOURCE, media_id):
             return True, "订阅已存在"
 
         try:
@@ -610,7 +721,8 @@ class CollectionMissing(_PluginBase):
                 title=title,
                 year=year,
                 mtype=MediaType.MOVIE,
-                tmdbid=tmdb_id,
+                media_source=RECORD_MEDIA_SOURCE,
+                media_id=media_id,
                 exist_ok=True,
                 username=self.plugin_name,
                 message=False,
@@ -637,7 +749,11 @@ class CollectionMissing(_PluginBase):
     # API 端点
     # ================================================================
 
-    def __check_apikey(self, apikey: str) -> bool:
+    def __check_apikey(self, apikey: Optional[str]) -> bool:
+        # V3 宿主已通过 auth="bear" 完成统一鉴权；apikey 仅作为兼容 v2 页面事件的
+        # 兜底校验：显式传入时必须与宿主 API_TOKEN 一致，未传入（走 bearer）则放行。
+        if apikey is None:
+            return True
         return apikey == settings.API_TOKEN
 
     def __get_details(self) -> Optional[dict]:
@@ -654,7 +770,7 @@ class CollectionMissing(_PluginBase):
         history["details"] = details
         self.save_data("history", history)
 
-    def subscribe(self, key: str, apikey: str):
+    def subscribe(self, key: str, apikey: Optional[str] = None) -> PluginActionResponse:
         """订阅单部缺失电影"""
         if not self.__check_apikey(apikey):
             return schemas.Response(success=False, message="API密钥错误")
@@ -678,7 +794,7 @@ class CollectionMissing(_PluginBase):
         self.__save_details(details)
         return schemas.Response(success=False, message=f"{record.get('title')} 订阅失败: {msg}")
 
-    def ignore(self, key: str, apikey: str):
+    def ignore(self, key: str, apikey: Optional[str] = None) -> PluginActionResponse:
         """忽略单部缺失电影"""
         if not self.__check_apikey(apikey):
             return schemas.Response(success=False, message="API密钥错误")
@@ -691,7 +807,7 @@ class CollectionMissing(_PluginBase):
         self.__save_details(details)
         return schemas.Response(success=True, message="已忽略")
 
-    def restore(self, key: str, apikey: str):
+    def restore(self, key: str, apikey: Optional[str] = None) -> PluginActionResponse:
         """恢复为待处理"""
         if not self.__check_apikey(apikey):
             return schemas.Response(success=False, message="API密钥错误")
@@ -704,7 +820,7 @@ class CollectionMissing(_PluginBase):
         self.__save_details(details)
         return schemas.Response(success=True, message="已恢复为待处理")
 
-    def delete(self, key: str, apikey: str):
+    def delete(self, key: str, apikey: Optional[str] = None) -> PluginActionResponse:
         """删除单条检查记录"""
         if not self.__check_apikey(apikey):
             return schemas.Response(success=False, message="API密钥错误")
@@ -717,7 +833,7 @@ class CollectionMissing(_PluginBase):
         self.__save_details(details)
         return schemas.Response(success=True, message="删除成功")
 
-    def subscribe_collection(self, server: str, collection: str, apikey: str):
+    def subscribe_collection(self, server: str, collection: str, apikey: Optional[str] = None) -> PluginActionResponse:
         """批量订阅某合集下所有待处理电影"""
         if not self.__check_apikey(apikey):
             return schemas.Response(success=False, message="API密钥错误")
@@ -751,7 +867,7 @@ class CollectionMissing(_PluginBase):
             message=f"合集订阅完成：成功 {success_count}，失败 {len(targets) - success_count}",
         )
 
-    def ignore_collection(self, server: str, collection: str, apikey: str):
+    def ignore_collection(self, server: str, collection: str, apikey: Optional[str] = None) -> PluginActionResponse:
         """批量忽略某合集下所有待处理电影"""
         if not self.__check_apikey(apikey):
             return schemas.Response(success=False, message="API密钥错误")
@@ -772,7 +888,7 @@ class CollectionMissing(_PluginBase):
         self.__save_details(details)
         return schemas.Response(success=True, message=f"已忽略 {count} 部")
 
-    def set_filter(self, filter: str, apikey: str):
+    def set_filter(self, filter: str, apikey: Optional[str] = None) -> PluginActionResponse:
         """切换页面筛选"""
         if not self.__check_apikey(apikey):
             return schemas.Response(success=False, message="API密钥错误")
@@ -781,7 +897,7 @@ class CollectionMissing(_PluginBase):
         self.save_data("filter", filter)
         return schemas.Response(success=True, message=f"已切换筛选: {filter}")
 
-    def clear_records(self, scope: str, apikey: str):
+    def clear_records(self, scope: str, apikey: Optional[str] = None) -> PluginActionResponse:
         """清空检查记录，scope=all 全部清空，scope=pending 只清待处理"""
         if not self.__check_apikey(apikey):
             return schemas.Response(success=False, message="API密钥错误")

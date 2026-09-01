@@ -2,7 +2,9 @@
 
 扫描 Emby / Jellyfin 媒体库中的**电影合集（BoxSet / Collection）**，与 TMDB 合集全量片单做差集，把**缺失的电影列出**，之后逐部或按合集批量决定是否订阅。
 
-> 适用于 MoviePilot **v2.15.0+**。
+> 同时支持 MoviePilot **V2（v2.15.0+）** 与 **V3（v3.0.0+）**。
+> - V2 版本：`v1.2.0`（`plugins.v2/`）
+> - V3 版本：`v2.0.0`（`plugins.v3/`，按官方迁移规范完成 V3 独立适配）
 
 
 ## 功能
@@ -17,6 +19,17 @@
 - 页面筛选：待处理 / 已订阅 / 已忽略 / 全部
 - 发现新增缺失时支持系统通知
 - 远程命令 `/collection_missing` 立即扫描
+
+## V3 适配说明（v1.2.0 / v2.0.0）
+
+对照 [官方 V3 插件迁移文档](https://github.com/jxxghp/MoviePilot-Plugins/blob/main/docs/V3_Plugin_Adaptation.md) 完成：
+
+- 新增 `plugins.v3/collectionmissing/`（V3 专用实现，版本 `2.0.0`），`package.v3.json` 声明 `system_version: ">=3.0.0"`；`package.v2.json` 同名条目声明 `"v3": false`，避免 V3 宿主回退加载旧合同实现
+- V2 实现保留在 `plugins.v2/`（版本 `1.2.0`），行为不变，V2 宿主继续正常使用
+- V3 实现导入全部迁移到稳定 SDK：`app.sdk.config` / `app.sdk.events` / `app.sdk.logging` / `app.sdk.services`
+- 识别与订阅链路统一按 `media_source` + `media_id` 成对身份调用（`MediaChain.recognize_media`、`SubscribeChain.add`、`SubscribeOper.exists`），不再使用 `tmdbid` 参数
+- 记录数据同时保存统一身份字段（`media_source` / `media_id`），`tmdb_id` 作为 TMDB 合集维度的单源辅助字段保留；插件初始化时对存量 v1.x 记录执行幂等的统一身份迁移
+- 插件 API 注册 `auth: "bear"` 并补全 `response_model` 声明；`apikey` 作为兼容参数保留（可选，显式传入时校验）
 
 ## 安装
 
