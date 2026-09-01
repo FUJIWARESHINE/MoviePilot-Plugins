@@ -14,7 +14,7 @@
   },
   "MuxueSignin": {
     "name": "慕雪自动签到",
-    "description": "自动签到慕雪阁 (pt.muxuege.org) 与 Depth Studio (dstudio.me) 两个 NexusPHP 站点，Cookie 从 MoviePilot 站点管理读取。",
+    "description": "自动签到慕雪阁与两个 NexusPHP 站点，Cookie 从 MoviePilot 站点管理读取。",
     "labels": "签到,PT,NexusPHP,慕雪阁,Depth Studio",
     "version": "1.0.0",
     "icon": "MuxueSignin.png",
