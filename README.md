@@ -91,7 +91,7 @@
 
 1. MoviePilot → 插件 → 仓库管理 → 添加仓库 `https://github.com/FUJIWARESHINE/MoviePilot-Plugins`
 2. 在市场中找到「慕雪自动签到」安装
-3. 启用插件前请确认「站点管理」中已配置好两个站点的 Cookie（站点域名分别为 `pt.muxuege.org` 与 `dstudio.me`）
+3. 启用插件前请确认「站点管理」中已配置好两个站点的 Cookie
 
 ### 配置
 
