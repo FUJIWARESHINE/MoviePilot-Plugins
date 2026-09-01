@@ -16,13 +16,14 @@
     "name": "慕雪自动签到",
     "description": "自动签到慕雪阁与两个 NexusPHP 站点，Cookie 从 MoviePilot 站点管理读取。",
     "labels": "签到,PT,NexusPHP,慕雪阁,Depth Studio",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "icon": "MuxueSignin.png",
     "author": "FUJIWARESHINE",
     "system_version": ">=2.15.0",
     "level": 2,
     "history": {
-      "v1.0.0": "首个版本：慕雪阁 + Depth Studio 双站签到，GET 探测优先（NexusPHP 关闭验证码时 GET 自动签到），识别验证码并提示手动签到，单站失败隔离。"
+      "v1.0.1": "修复首次安装后打开配置页提示「配置加载失败」的问题：配置为空时 init_plugin 触发 KeyError，导致 MoviePilot 放弃加载本插件；同时修复通知标题恒为「部分签到失败」、可变类属性在分身间共享等问题，并为 get_form/get_page 增加异常兜底。",
+      "v1.0.0": "首个版本：双站签到，GET 探测优先（NexusPHP 关闭验证码时 GET 自动签到），识别验证码并提示手动签到，单站失败隔离。"
     }
   }
 }

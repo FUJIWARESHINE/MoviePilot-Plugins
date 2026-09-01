@@ -7,6 +7,7 @@ Cookie 从 MoviePilot「站点管理」中读取，不在插件内另行配置�
 import html
 import re
 import threading
+import traceback
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urljoin
@@ -72,7 +73,7 @@ class MuxueSignin(_PluginBase):
     plugin_name = "慕雪自动签到"
     plugin_desc = "自动签到慕雪阁、Depth Studio 站点，Cookie 从站点管理读取"
     plugin_icon = "MuxueSignin.png"
-    plugin_version = "1.0.0"
+    plugin_version = "1.0.1"
     plugin_author = "FUJIWARESHINE"
     plugin_config_prefix = "muxuesignin_"
     plugin_order = 21
@@ -85,11 +86,12 @@ class MuxueSignin(_PluginBase):
                   "AppleWebKit/537.36 (KHTML, like Gecko) "
                   "Chrome/131.0.0.0 Safari/537.36")
 
-    # 私有属性
+    # 私有属性（仅作类级默认值；可变对象一律在 __init__ 里按实例重建，
+    # 否则分身实例之间会共享同一份 dict / Lock）
     _enabled: bool = False
     _onlyonce: bool = False
     _cron: str = ""
-    _notify: bool = False
+    _notify: bool = True
     _site_enable: Dict[str, bool] = {}
     _site_domain: Dict[str, str] = {}
     _clear: bool = False
@@ -98,24 +100,50 @@ class MuxueSignin(_PluginBase):
 
     # -------------------------------------------------------------- 生命周期
 
+    def __init__(self):
+        super().__init__()
+        self._enabled = False
+        self._onlyonce = False
+        self._cron = ""
+        self._notify = True
+        self._clear = False
+        self._scheduler = None
+        self._lock = threading.Lock()
+        # 站点开关 / 域名以注册表默认值为准，保证即使配置缺失也有合法值
+        self._site_enable = {site["key"]: True for site in SITES}
+        self._site_domain = {site["key"]: site["domain"] for site in SITES}
+
     def init_plugin(self, config: dict = None):
+        """
+        生效配置。
+
+        MoviePilot 的 PluginManager.start() 是先调用本方法、成功后才把实例放进
+        running_plugins，因此这里抛出的任何异常都会让插件不被加载，前端打开配置页
+        时表现为「配置加载失败，请稍后重试」。故整体做异常兜底，绝不向外抛。
+        """
+        try:
+            self.__do_init_plugin(config)
+        except Exception as e:
+            logger.error(f"慕雪自动签到：初始化失败，已回退默认配置：{e}")
+            logger.error(traceback.format_exc())
+
+    def __do_init_plugin(self, config: dict = None):
         self.stop_service()
 
         if config:
-            self._enabled = config.get("enabled", False)
-            self._onlyonce = config.get("onlyonce", False)
-            self._cron = config.get("cron", "") or ""
-            self._notify = config.get("notify", True)
-            self._clear = config.get("clear", False)
+            self._enabled = bool(config.get("enabled", False))
+            self._onlyonce = bool(config.get("onlyonce", False))
+            self._cron = (config.get("cron") or "").strip()
+            self._notify = bool(config.get("notify", True))
+            self._clear = bool(config.get("clear", False))
             for site in SITES:
                 self._site_enable[site["key"]] = bool(config.get(site["config_enable"], True))
-                self._site_domain[site["key"]] = (
-                    config.get(site["config_domain"]) or site["domain"]
-                ).strip() or site["domain"]
+                raw_domain = config.get(site["config_domain"]) or site["domain"]
+                self._site_domain[site["key"]] = str(raw_domain).strip() or site["domain"]
 
         # 站点启用同步到站点数据，便于详情页读取
         for site in SITES:
-            self.save_data(f"enable_{site['key']}", self._site_enable[site["key"]])
+            self.save_data(f"enable_{site['key']}", self._site_enable.get(site["key"], True))
 
         if self._clear:
             self._clear_all_history()
@@ -206,6 +234,39 @@ class MuxueSignin(_PluginBase):
     # -------------------------------------------------------------- 表单
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
+        """
+        拼装配置表单。
+
+        MoviePilot 后端在这里捕获异常后直接返回空对象，前端就会显示
+        「配置加载失败，请稍后重试」，因此这里再兜一层，保证永远返回合法结构。
+        """
+        try:
+            return self.__build_form()
+        except Exception as e:
+            logger.error(f"慕雪自动签到：生成配置表单失败：{e}")
+            logger.error(traceback.format_exc())
+            return ([{
+                "component": "VAlert",
+                "props": {
+                    "type": "error",
+                    "variant": "tonal",
+                    "text": f"配置表单生成失败：{e}",
+                }
+            }], self.__default_config())
+
+    @staticmethod
+    def __default_config() -> Dict[str, Any]:
+        return {
+            "enabled": False,
+            "notify": True,
+            "onlyonce": False,
+            "cron": "0 9 * * *",
+            "clear": False,
+            **{s["config_enable"]: True for s in SITES},
+            **{s["config_domain"]: s["domain"] for s in SITES},
+        }
+
+    def __build_form(self) -> Tuple[List[dict], Dict[str, Any]]:
         site_rows = []
         for site in SITES:
             site_rows.append({
@@ -324,22 +385,34 @@ class MuxueSignin(_PluginBase):
                     }
                 ]
             }
-        ], {
-            "enabled": False,
-            "notify": True,
-            "onlyonce": False,
-            "cron": "0 9 * * *",
-            "clear": False,
-            **{s["config_enable"]: True for s in SITES},
-            **{s["config_domain"]: s["domain"] for s in SITES},
-        }
+        ], self.__default_config()
 
     # -------------------------------------------------------------- 详情页
 
     def get_page(self) -> List[dict]:
+        try:
+            return self.__build_page()
+        except Exception as e:
+            logger.error(f"慕雪自动签到：生成数据页面失败：{e}")
+            logger.error(traceback.format_exc())
+            return [{
+                "component": "VAlert",
+                "props": {
+                    "type": "error",
+                    "variant": "tonal",
+                    "text": f"数据页面生成失败：{e}",
+                }
+            }]
+
+    def __build_page(self) -> List[dict]:
         merged: List[Dict[str, Any]] = []
         for site in SITES:
-            for record in (self.get_data(f"history_{site['key']}") or []):
+            history = self.get_data(f"history_{site['key']}")
+            if not isinstance(history, list):
+                continue
+            for record in history:
+                if not isinstance(record, dict):
+                    continue
                 merged.append({**record, "site_key": site["key"], "site_name": site["name"]})
 
         last_run = self.get_data("lastrun")
@@ -347,19 +420,20 @@ class MuxueSignin(_PluginBase):
         # 站点状态卡片
         cards = []
         for site in SITES:
-            history = self.get_data(f"history_{site['key']}") or []
+            history = self.get_data(f"history_{site['key']}")
+            history = history if isinstance(history, list) else []
             enabled = self._site_enable.get(site["key"], True)
-            last = history[0] if history else None
-            last_status = STATUS_TEXT.get(last["status"], "-") if last else "尚未运行"
+            last = history[0] if history and isinstance(history[0], dict) else None
+            last_status = STATUS_TEXT.get(last.get("status"), "-") if last else "尚未运行"
             last_time = last.get("time", "-") if last else "-"
             last_msg = (last.get("message") or "-") if last else "-"
             card_color = "primary"
             if last:
-                if last["status"] == STATUS_SIGNED or last["status"] == STATUS_ALREADY:
+                if last.get("status") in (STATUS_SIGNED, STATUS_ALREADY):
                     card_color = "success"
-                elif last["status"] in (STATUS_LOGIN_EXPIRED, STATUS_NETWORK):
+                elif last.get("status") in (STATUS_LOGIN_EXPIRED, STATUS_NETWORK):
                     card_color = "warning"
-                elif last["status"] in (STATUS_FAILED, STATUS_CAPTCHA):
+                elif last.get("status") in (STATUS_FAILED, STATUS_CAPTCHA):
                     card_color = "error"
 
             cards.append({
@@ -501,7 +575,12 @@ class MuxueSignin(_PluginBase):
     def __history_api(self) -> Dict[str, Any]:
         merged: List[Dict[str, Any]] = []
         for site in SITES:
-            for record in (self.get_data(f"history_{site['key']}") or []):
+            history = self.get_data(f"history_{site['key']}")
+            if not isinstance(history, list):
+                continue
+            for record in history:
+                if not isinstance(record, dict):
+                    continue
                 merged.append({**record, "site_key": site["key"], "site_name": site["name"]})
         merged.sort(key=lambda r: r.get("time") or "", reverse=True)
         return {"success": True, "data": merged[:50]}
@@ -530,6 +609,7 @@ class MuxueSignin(_PluginBase):
         try:
             logger.info("慕雪自动签到：开始本轮签到")
             summary = []
+            statuses = []
             for site in SITES:
                 if site_filter and site["key"] != site_filter:
                     continue
@@ -538,12 +618,13 @@ class MuxueSignin(_PluginBase):
                     continue
 
                 result = self.__sign_one(site)
+                statuses.append(result.get("status"))
                 summary.append(f"{site['name']}：{STATUS_TEXT.get(result['status'], result['status'])}"
                                + (f" | {result['message']}" if result.get("message") else ""))
 
             self.save_data("lastrun", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
             if self._notify and summary:
-                ok = all(": 签到成功" in s or ": 今日已签到" in s for s in summary)
+                ok = all(s in (STATUS_SIGNED, STATUS_ALREADY) for s in statuses)
                 self.post_message(
                     mtype=NotificationType.SiteMessage,
                     title=f"【慕雪自动签到】{'签到完成' if ok else '部分签到失败'}",
