@@ -73,16 +73,10 @@
 
 ## 慕雪自动签到
 
-自动签到慕雪阁 (pt.muxuege.org) 与 Depth Studio (dstudio.me) 两个 NexusPHP 站点的 PT 签到插件。Cookie 直接从 MoviePilot「站点管理」读取，不在插件内另行配置。
+自动签到慕雪阁与 Depth Studio两个站点的 PT 签到插件。Cookie 直接从 MoviePilot「站点管理」读取，不在插件内另行配置。
 
 > 适用于 MoviePilot **v2.15.0+**。
 
-### 站点
-
-| 站点 | 域名 | NexusPHP 签到入口 |
-|---|---|---|
-| 慕雪阁 | `pt.muxuege.org` | `attendance.php` |
-| Depth Studio | `dstudio.me` | `attendance.php` |
 
 ### 特性
 
@@ -109,9 +103,9 @@
 | 执行周期 | 定时任务 cron 表达式，默认 `0 9 * * *` |
 | 清空签到记录 | 保存后立即清空所有站点的签到历史 |
 | 签到 慕雪阁 | 该站点独立开关 |
-| 慕雪阁 站点管理匹配域名 | 一般保持 `pt.muxuege.org` 即可 |
+| 慕雪阁 站点管理匹配域名 | 一般保持 `` 即可 |
 | 签到 Depth Studio | 该站点独立开关 |
-| Depth Studio 站点管理匹配域名 | 一般保持 `dstudio.me` 即可 |
+| Depth Studio 站点管理匹配域名 | 一般保持 `` 即可 |
 
 ### 注意
 
