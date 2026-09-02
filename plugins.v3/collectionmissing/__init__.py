@@ -119,7 +119,7 @@ class CollectionMissing(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/FUJIWARESHINE/MoviePilot-Plugins/main/icons/CollectionMissing.png"
     # 插件版本，必须与 package.v3.json 中保持一致
-    plugin_version = "2.1.1"
+    plugin_version = "2.1.2"
     # 插件作者
     plugin_author = "FUJIWARESHINE"
     # 作者主页
@@ -507,14 +507,21 @@ class CollectionMissing(_PluginBase):
                 present_keys.add(f"{server_name}:{collection_id}:{movie.tmdb_id}")
                 continue
 
-            # 跳过未上映电影
-            if self._skip_unreleased:
-                release_date = self.__parse_release_date(movie.release_date)
-                if release_date and release_date > now:
-                    logger.debug(
-                        f"[{server_name}] 跳过未上映电影: {movie.title}（{movie.release_date}）"
-                    )
-                    continue
+            # 解析上映日期：缺日期视为废案（电影公司早年立项但未上映的影片也被
+            # 收录进合集），订阅了也不会有任何资源，长期占位没意义，直接跳过
+            release_date = self.__parse_release_date(movie.release_date)
+            if not release_date:
+                logger.debug(
+                    f"[{server_name}] 跳过无上映日期电影（疑似废案）: {movie.title}"
+                )
+                continue
+
+            # 跳过未上映电影（受 _skip_unreleased 配置控制）
+            if self._skip_unreleased and release_date > now:
+                logger.debug(
+                    f"[{server_name}] 跳过未上映电影: {movie.title}（{movie.release_date}）"
+                )
+                continue
 
             # TMDB 评分下限过滤
             vote = float(movie.vote_average or 0)
@@ -1816,25 +1823,36 @@ class CollectionMissing(_PluginBase):
                         },
                     ],
                 },
-                # 底部操作按钮：等宽 flex 行，按钮通过 flex-grow-1 自动均分
+                # 底部操作按钮：等宽 flex 行，按钮通过 flex-grow-1 自动均分；
+                # 容器加 flex-shrink-0 防止上方长片名/长简介把按钮区挤出可视范围
                 {
                     "component": "div",
-                    "props": {"class": "d-flex w-100 mt-auto"},
+                    "props": {"class": "d-flex w-100 mt-auto flex-shrink-0"},
                     "content": action_buttons,
                 },
             ],
         }
 
     def __get_action_buttons_content(self, key: str, record: dict) -> List[dict]:
-        """按记录状态生成操作按钮"""
+        """按记录状态生成操作按钮
+
+        设计要点：
+        - "删除"在三个按钮里语义最弱，因此压成图标按钮（垃圾桶图标），保证
+          在窄卡片宽度下订阅/忽略两个文字按钮也能完整显示不被截断；
+        - 文字按钮加 `text-no-wrap` 强制单行，配合 `flex-grow-1` 自动均分；
+        - 按钮容器固定 `flex-shrink-0`，不会被上方海报/信息区挤压消失。
+        """
         status = record.get("status") or STATUS_PENDING
 
-        def _btn(api: str, text: str, color_class: str) -> dict:
+        def _text_btn(api: str, text: str, color_class: str) -> dict:
             return {
                 "component": "VBtn",
                 "props": {
-                    "class": f"{color_class} flex-grow-1",
+                    "class": f"{color_class} flex-grow-1 flex-shrink-1 text-no-wrap",
                     "variant": "tonal",
+                    "size": "small",
+                    "density": "comfortable",
+                    "style": "min-width: 0;",
                 },
                 "events": {
                     "click": {
@@ -1846,25 +1864,54 @@ class CollectionMissing(_PluginBase):
                 "text": text,
             }
 
+        def _icon_btn(api: str, icon: str, color_class: str, title: str) -> dict:
+            """图标按钮：用于"删除"等次要动作占位，悬浮提示靠原生 title 属性"""
+            return {
+                "component": "VBtn",
+                "props": {
+                    "class": f"{color_class} flex-shrink-0",
+                    "variant": "tonal",
+                    "size": "small",
+                    "density": "comfortable",
+                    "icon": True,
+                    "title": title,
+                    "style": "min-width: 0;",
+                },
+                "events": {
+                    "click": {
+                        "api": f"plugin/CollectionMissing/{api}",
+                        "method": "get",
+                        "params": {"key": f"{key}", "apikey": settings.API_TOKEN},
+                    }
+                },
+                "content": [
+                    {
+                        "component": "VIcon",
+                        "props": {"size": "small"},
+                        "text": icon,
+                    }
+                ],
+            }
+
         if status == STATUS_PENDING:
             return [
-                _btn("subscribe", "订阅", "text-primary"),
-                _btn("ignore", "忽略", "text-warning"),
-                _btn("delete", "删除", "text-error"),
+                _text_btn("subscribe", "订阅", "text-primary"),
+                _text_btn("ignore", "忽略", "text-warning"),
+                _icon_btn("delete", "mdi-delete-outline", "text-error", "删除"),
             ]
         if status == STATUS_SUBSCRIBED:
             return [
-                _btn("ignore", "忽略", "text-warning"),
-                _btn("delete", "删除", "text-error"),
+                _text_btn("ignore", "忽略", "text-warning"),
+                _icon_btn("delete", "mdi-delete-outline", "text-error", "删除"),
             ]
         if status == STATUS_IGNORED:
             return [
-                _btn("restore", "恢复", "text-success"),
-                _btn("delete", "删除", "text-error"),
+                _text_btn("restore", "恢复", "text-success"),
+                _icon_btn("delete", "mdi-delete-outline", "text-error", "删除"),
             ]
         return [
-            _btn("subscribe", "重试", "text-primary"),
-            _btn("delete", "删除", "text-error"),
+            _text_btn("subscribe", "重试", "text-primary"),
+            _icon_btn("delete", "mdi-delete-outline", "text-error", "删除"),
         ]
 
     def stop_service(self):
