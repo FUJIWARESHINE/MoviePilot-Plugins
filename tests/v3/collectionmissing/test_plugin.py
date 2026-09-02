@@ -283,7 +283,7 @@ class TestPageRendering:
         }
 
     def test_poster_card_structure(self, plugin_instance):
-        """海报卡：2:3 海报、评分角标、状态角标、片名链接、长简介截断为悬浮提示。"""
+        """海报卡：2:3 海报、评分角标、状态角标、片名链接；不再带简介悬浮提示。"""
         self._seed_one(
             plugin_instance,
             vote_average=7.4,
@@ -295,7 +295,8 @@ class TestPageRendering:
         assert "★ 7.4" in raw
         assert "position-absolute" in raw
         assert "#/media?mediaid=tmdb:206647" in raw
-        assert "…" in raw  # 超过 120 字的简介被截断
+        # 简介不再作为悬浮提示渲染（v2.1.1 移除）
+        assert "…" not in raw
 
     def test_progress_bar_shown_when_stats_present(self, plugin_instance):
         """有统计字段时渲染「已收 N/M」与按比例填充的进度条。"""

@@ -119,7 +119,7 @@ class CollectionMissing(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/FUJIWARESHINE/MoviePilot-Plugins/main/icons/CollectionMissing.png"
     # 插件版本，必须与 package.v3.json 中保持一致
-    plugin_version = "2.1.0"
+    plugin_version = "2.1.1"
     # 插件作者
     plugin_author = "FUJIWARESHINE"
     # 作者主页
@@ -1721,10 +1721,6 @@ class CollectionMissing(_PluginBase):
         else:
             poster = DEFAULT_POSTER
 
-        # 原生 title 悬浮简介：不依赖未验证的 VTooltip，信息提示场景足够
-        overview = (record.get("overview") or "").strip()
-        overview_tip = (overview[:120] + "…") if len(overview) > 120 else overview
-
         mp_domain = settings.MP_DOMAIN()
         link = f"#/media?mediaid=tmdb:{tmdb_id}&type={MediaType.MOVIE.value}"
         if mp_domain:
@@ -1761,7 +1757,6 @@ class CollectionMissing(_PluginBase):
                 "variant": "tonal",
                 "class": card_class,
                 "style": "height: 100%;",
-                "title": overview_tip,
             },
             "content": [
                 # 海报区：评分角标左上、状态角标右上
@@ -1821,15 +1816,10 @@ class CollectionMissing(_PluginBase):
                         },
                     ],
                 },
-                # 底部操作按钮
+                # 底部操作按钮：等宽 flex 行，按钮通过 flex-grow-1 自动均分
                 {
-                    "component": "VBtnToggle",
-                    "props": {
-                        "class": "mt-auto",
-                        "style": "width: 100%; display: flex;",
-                        "variant": "tonal",
-                        "rounded": "0",
-                    },
+                    "component": "div",
+                    "props": {"class": "d-flex w-100 mt-auto"},
                     "content": action_buttons,
                 },
             ],
@@ -1843,9 +1833,8 @@ class CollectionMissing(_PluginBase):
             return {
                 "component": "VBtn",
                 "props": {
-                    "class": color_class,
+                    "class": f"{color_class} flex-grow-1",
                     "variant": "tonal",
-                    "style": "height: 100%; width: 100%; flex: 1;",
                 },
                 "events": {
                     "click": {

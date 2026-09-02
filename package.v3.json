@@ -3,14 +3,15 @@
     "name": "Emby 电影合集缺集订阅",
     "description": "扫描 Emby/Jellyfin 媒体库中的电影合集（BoxSet），与 TMDB 合集全量片单对比，列出缺失电影供手动确认订阅。",
     "labels": "媒体库,合集,查缺,Emby,Jellyfin",
-    "version": "2.1.0",
+    "version": "2.1.1",
     "icon": "CollectionMissing.png",
     "author": "FUJIWARESHINE",
     "level": 2,
     "system_version": ">=3.0.0",
     "release": true,
     "history": {
-      "v2.1.0": "详情页重构：顶部四张状态统计卡（含订阅失败）、实心选中态筛选条、响应式海报墙（评分/状态角标 + 悬浮简介）、合集分组折叠 + 补齐进度条（每组默认渲染 12 部），新增 /toggle_group 与 /set_all_groups 端点。",
+      "v2.1.1": "fix(collectionmissing): 移除海报卡简介悬浮提示；将底部操作按钮容器由 VBtnToggle 改为普通 flex div，按钮文字不再被裁切。",
+      "v2.1.0": "详情页重构：顶部四张状态统计卡（含订阅失败）、实心选中态筛选条、响应式海报墙（评分/状态角标）、合集分组折叠 + 补齐进度条（每组默认渲染 12 部），新增 /toggle_group 与 /set_all_groups 端点。",
       "v2.0.0": "V3 独立版本：迁移至 plugins.v3，改用 app.sdk 稳定导入，识别与订阅链路统一按 media_source + media_id 成对身份调用，插件 API 声明 auth=bear 并补全 response_model，为存量记录提供幂等的统一媒体身份迁移。",
       "v1.0.0": "首个版本：支持 Emby 与 Jellyfin 电影合集缺失扫描，详情页手动确认订阅/忽略/删除/恢复，提供按合集批量订阅与远程命令 /collection_missing。"
     }
