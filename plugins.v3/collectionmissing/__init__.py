@@ -41,6 +41,17 @@ STATUS_TEXT: Dict[str, str] = {
     STATUS_FAILED: "订阅失败",
 }
 
+# 状态 → Vuetify 主题色，供统计卡、状态 Chip、海报角标复用，保证亮暗主题自适应
+STATUS_COLOR: Dict[str, str] = {
+    STATUS_PENDING: "primary",
+    STATUS_SUBSCRIBED: "success",
+    STATUS_IGNORED: "grey",
+    STATUS_FAILED: "error",
+}
+
+# 单个合集默认渲染的海报数量，超出部分折叠，避免长合集把首屏一次性撑爆
+GROUP_PAGE_SIZE = 12
+
 DEFAULT_POSTER = "/assets/no-image-CweBJ8Ee.jpeg"
 POSTER_BASE = "https://image.tmdb.org/t/p/w500"
 
@@ -51,6 +62,11 @@ RECORD_MEDIA_SOURCE = MediaSource.TMDB
 # 文案，业务数据恒为空。get_api() 注册的路由不会被宿主隐式包装，因此必须自己
 # 声明与返回结构一致的 response_model。
 PluginActionResponse = schemas.Response[dict]
+
+
+def collection_group_key(server: Any, collection_id: Any) -> str:
+    """合集的分组键：只到合集维度，与记录键 server:collection_id:tmdb_id 区分开。"""
+    return f"{server}:{collection_id}"
 
 
 def tmdb_media_id(tmdb_id: Any) -> Optional[str]:
@@ -103,7 +119,7 @@ class CollectionMissing(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/FUJIWARESHINE/MoviePilot-Plugins/main/icons/CollectionMissing.png"
     # 插件版本，必须与 package.v3.json 中保持一致
-    plugin_version = "2.0.0"
+    plugin_version = "2.1.0"
     # 插件作者
     plugin_author = "FUJIWARESHINE"
     # 作者主页
@@ -159,6 +175,9 @@ class CollectionMissing(_PluginBase):
         # 存量数据迁移：为 v1.x 遗留的仅含 tmdb_id 的记录补齐 V3 统一身份字段
         self.__migrate_history_identity()
 
+        # 存量数据对齐：同一合集的记录共享一份补齐进度（总片数 / 已收数）
+        self.__backfill_collection_stats()
+
         # 构建媒体库选项（供表单多选）
         if self._mediaservers:
             self._all_libraries = self._build_library_list()
@@ -166,6 +185,7 @@ class CollectionMissing(_PluginBase):
         # 立即清理检查记录
         if self._clear:
             self.save_data("history", {"last_scan": "", "details": {}})
+            self.save_data("expanded_groups", {})
             self._clear = False
             self.update_config({
                 "enabled": self._enabled,
@@ -280,6 +300,22 @@ class CollectionMissing(_PluginBase):
                 "methods": ["GET"],
                 "auth": "bear",
                 "summary": "切换页面筛选",
+                "response_model": PluginActionResponse,
+            },
+            {
+                "path": "/toggle_group",
+                "endpoint": self.toggle_group,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "切换单个合集的展开状态",
+                "response_model": PluginActionResponse,
+            },
+            {
+                "path": "/set_all_groups",
+                "endpoint": self.set_all_groups,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "一次性展开或收起全部合集",
                 "response_model": PluginActionResponse,
             },
             {
@@ -454,6 +490,13 @@ class CollectionMissing(_PluginBase):
         existing_tmdb_ids = self.__get_boxset_movie_tmdb_ids(service, user_id, boxset_id)
         logger.debug(f"[{server_name}] 合集 {boxset_name} 已有 {len(existing_tmdb_ids)} 部电影")
 
+        # 合集补齐进度：总数取 TMDB 全量片单长度；已收数取片单与媒体库已有 TMDB ID
+        # 的交集，避免把不在 TMDB 片单里的库内条目也算成已收
+        collection_total = len(tmdb_movies)
+        collection_owned = sum(
+            1 for m in tmdb_movies if m and m.tmdb_id and m.tmdb_id in existing_tmdb_ids
+        )
+
         now = datetime.now()
         for movie in tmdb_movies:
             if not movie or not movie.tmdb_id:
@@ -489,14 +532,19 @@ class CollectionMissing(_PluginBase):
             unique = f"{server_name}:{collection_id}:{media_id}"
             record = details.get(unique)
             if record:
-                # 已有记录：只刷新检查时间，不覆盖用户决策
+                # 已有记录：只刷新检查时间与合集进度，不覆盖用户决策
                 record["last_check"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                record["collection_total"] = collection_total
+                record["collection_owned"] = collection_owned
                 continue
 
             details[unique] = {
                 "server": server_name,
                 "collection_id": collection_id,
                 "collection_name": boxset_name,
+                # 合集补齐进度：TMDB 全量片单长度与媒体库已收数量
+                "collection_total": collection_total,
+                "collection_owned": collection_owned,
                 # V3 统一媒体身份；tmdb_id 作为 TMDB 合集维度的单源辅助字段保留
                 "media_source": RECORD_MEDIA_SOURCE.value,
                 "media_id": media_id,
@@ -700,6 +748,59 @@ class CollectionMissing(_PluginBase):
             self.__save_details(details)
             logger.info(f"已为 {migrated} 条存量记录补齐 V3 统一媒体身份")
         return migrated
+
+    def __backfill_collection_stats(self) -> int:
+        """在同一合集内对齐补齐进度字段，返回本次实际写入的记录数。
+
+        合集总片数与已收数只能在扫描时从 TMDB 片单与媒体库现况取得，存量记录无法
+        凭空推算，因此这里只做组内传播：同一 (server, collection_id) 的记录共享同一
+        份统计，任一条已有有效值时同步给组内其它记录，避免同一合集里部分记录显示出
+        进度、另一部分显示不出来。
+
+        整组都没有统计时保持原样（不写 0、不写占位值），页面按「无统计」降级隐藏进度
+        条，等下一次扫描自然补齐。方法可重复执行：第二次执行时组内已一致，返回 0 且不写库。
+        """
+        history: dict = self.get_data("history") or {}
+        details = history.get("details") if isinstance(history, dict) else None
+        if not isinstance(details, dict) or not details:
+            return 0
+
+        # 先按合集聚合出组内已知的有效统计
+        group_stats: Dict[tuple, Tuple[int, int]] = {}
+        for record in details.values():
+            if not isinstance(record, dict):
+                continue
+            total = record.get("collection_total")
+            owned = record.get("collection_owned")
+            if isinstance(total, int) and isinstance(owned, int):
+                group_stats[(record.get("server"), record.get("collection_id"))] = (
+                    total,
+                    owned,
+                )
+
+        if not group_stats:
+            return 0
+
+        filled = 0
+        for record in details.values():
+            if not isinstance(record, dict):
+                continue
+            stats = group_stats.get((record.get("server"), record.get("collection_id")))
+            if not stats:
+                continue
+            total, owned = stats
+            if (
+                record.get("collection_total") != total
+                or record.get("collection_owned") != owned
+            ):
+                record["collection_total"] = total
+                record["collection_owned"] = owned
+                filled += 1
+
+        if filled:
+            self.__save_details(details)
+            logger.info(f"已对齐 {filled} 条记录的合集补齐进度字段")
+        return filled
 
     # ================================================================
     # 订阅
@@ -912,12 +1013,53 @@ class CollectionMissing(_PluginBase):
             return schemas.Response(success=True, message=f"已清空 {before - len(details)} 条待处理记录")
         if scope == "all":
             self.save_data("history", {"last_scan": "", "details": {}})
+            # 记录清空后展开状态已无对应合集，一并清掉避免留下垃圾
+            self.save_data("expanded_groups", {})
             return schemas.Response(success=True, message="已清空全部记录")
         return schemas.Response(success=False, message="无效的清理范围")
+
+    def toggle_group(self, group: str, apikey: Optional[str] = None) -> PluginActionResponse:
+        """切换单个合集的展开状态：展开后渲染该合集全部缺失电影"""
+        if not self.__check_apikey(apikey):
+            return schemas.Response(success=False, message="API密钥错误")
+        if not group:
+            return schemas.Response(success=False, message="缺少合集标识")
+
+        expanded = self.__get_expanded_groups()
+        key = str(group)
+        expanded[key] = not expanded.get(key, False)
+        self.save_data("expanded_groups", expanded)
+        return schemas.Response(
+            success=True,
+            message="已展开该合集" if expanded[key] else "已收起该合集",
+        )
+
+    def set_all_groups(self, expanded: str, apikey: Optional[str] = None) -> PluginActionResponse:
+        """一次性展开或收起全部合集，expanded 取 true/1/yes/on 视为展开"""
+        if not self.__check_apikey(apikey):
+            return schemas.Response(success=False, message="API密钥错误")
+
+        expand = str(expanded).strip().lower() in ("true", "1", "yes", "on")
+        # 以当前记录里实际存在的合集为准，避免为已消失的合集留下永久垃圾状态
+        keys = {
+            collection_group_key(record.get("server"), record.get("collection_id"))
+            for record in (self.__get_details() or {}).values()
+            if isinstance(record, dict)
+        }
+        self.save_data("expanded_groups", {key: expand for key in keys})
+        return schemas.Response(
+            success=True,
+            message=f"已{'展开' if expand else '收起'} {len(keys)} 个合集",
+        )
 
     # ================================================================
     # 辅助方法
     # ================================================================
+
+    def __get_expanded_groups(self) -> Dict[str, bool]:
+        """读取合集展开状态，始终返回字典，避免调用方各自判空。"""
+        data = self.get_data("expanded_groups")
+        return data if isinstance(data, dict) else {}
 
     @staticmethod
     def __parse_release_date(release_date: Optional[str]) -> Optional[datetime]:
@@ -1207,13 +1349,19 @@ class CollectionMissing(_PluginBase):
 
         current_filter = self.get_data("filter") or STATUS_PENDING
 
-        # 筛选按钮
+        # 全部合集是否已完整展开：决定工具条「全部展开/收起」的文案与目标状态
+        expanded_groups = self.__get_expanded_groups()
+        all_groups_full = bool(expanded_groups) and all(expanded_groups.values())
+
+        # 筛选按钮：选中项实心主色，未选中描边，一眼可辨
         filter_buttons = [
             {
                 "component": "VBtn",
                 "props": {
-                    "variant": "tonal",
-                    "class": "text-primary" if current_filter == key else "",
+                    "variant": "flat" if current_filter == key else "outlined",
+                    "color": "primary" if current_filter == key else "",
+                    "size": "small",
+                    "class": "mr-2",
                 },
                 "events": {
                     "click": {
@@ -1246,7 +1394,31 @@ class CollectionMissing(_PluginBase):
             })
             group["records"].append((key, record))
 
+        # 顶部状态统计卡：待处理 / 已订阅 / 已忽略 / 订阅失败
+        stat_cards = [
+            self.__get_stat_card_content(label, count, STATUS_COLOR[status])
+            for status, label, count in [
+                (STATUS_PENDING, "待处理", count_pending),
+                (STATUS_SUBSCRIBED, "已订阅", count_subscribed),
+                (STATUS_IGNORED, "已忽略", count_ignored),
+                (STATUS_FAILED, "订阅失败", count_failed),
+            ]
+        ]
+
         page_content = [
+            {
+                "component": "VRow",
+                "props": {"class": "mb-2"},
+                "content": [
+                    {
+                        "component": "VCol",
+                        "props": {"cols": 6, "md": 3},
+                        "content": [card],
+                    }
+                    for card in stat_cards
+                ],
+            },
+            # 筛选与操作工具条
             {
                 "component": "VCard",
                 "props": {"variant": "tonal", "class": "mb-4"},
@@ -1255,23 +1427,33 @@ class CollectionMissing(_PluginBase):
                         "component": "VCardText",
                         "props": {"class": "pa-2 d-flex flex-wrap align-center gap-2"},
                         "content": [
+                            *filter_buttons,
+                            {"component": "div", "props": {"class": "flex-grow-1"}},
                             {
-                                "component": "span",
-                                "props": {"class": "text-body-2 mr-4"},
-                                "text": f"共 {len(details)} 部缺失 · {collections_count} 个合集 · "
-                                        f"上次扫描 {history.get('last_scan') or '-'}",
-                            },
-                            {
-                                "component": "VBtnToggle",
-                                "props": {"variant": "tonal"},
-                                "content": filter_buttons,
+                                "component": "VBtn",
+                                "props": {
+                                    "variant": "tonal",
+                                    "size": "small",
+                                    "class": "mr-2",
+                                },
+                                "events": {
+                                    "click": {
+                                        "api": "plugin/CollectionMissing/set_all_groups",
+                                        "method": "get",
+                                        "params": {
+                                            "expanded": "false" if all_groups_full else "true",
+                                            "apikey": settings.API_TOKEN,
+                                        },
+                                    }
+                                },
+                                "text": "全部收起" if all_groups_full else "全部展开",
                             },
                             {
                                 "component": "VBtn",
                                 "props": {
-                                    "class": "text-error",
                                     "variant": "tonal",
                                     "size": "small",
+                                    "class": "text-error",
                                 },
                                 "events": {
                                     "click": {
@@ -1287,90 +1469,249 @@ class CollectionMissing(_PluginBase):
                             },
                         ],
                     },
+                    {
+                        "component": "VCardText",
+                        "props": {"class": "pa-2 pt-0 text-caption text-grey-darken-1"},
+                        "text": f"共 {len(details)} 部缺失 · {collections_count} 个合集 · "
+                                f"上次扫描 {history.get('last_scan') or '-'}",
+                    },
                 ],
             },
         ]
 
-        for group in sorted(groups.values(), key=lambda g: (g["name"] or "")):
-            server = group["server"]
-            collection_id = group["collection_id"]
-            records = sorted(group["records"], key=lambda x: x[1].get("title") or "")
+        # 合集分组渲染为折叠面板：面板自身的展开/收起由前端即时切换（零刷新）；
+        # 服务端只负责「完整展开」状态（expanded_groups），用于驱动每组合集的
+        # 默认渲染数量（前 GROUP_PAGE_SIZE 部 / 全部），并让整页重渲染后仍能
+        # 通过 modelValue 恢复默认展开项。
+        group_list = sorted(groups.values(), key=lambda g: (g["name"] or ""))
+        open_indices = [
+            i
+            for i, g in enumerate(group_list)
+            if expanded_groups.get(collection_group_key(g["server"], g["collection_id"]), False)
+        ]
 
-            has_pending = any(r.get("status") == STATUS_PENDING for _, r in records)
-
-            batch_buttons = []
-            if has_pending:
-                batch_buttons = [
-                    {
-                        "component": "VBtn",
-                        "props": {"class": "text-primary mr-2", "variant": "tonal", "size": "small"},
-                        "events": {
-                            "click": {
-                                "api": "plugin/CollectionMissing/subscribe_collection",
-                                "method": "get",
-                                "params": {
-                                    "server": str(server),
-                                    "collection": str(collection_id),
-                                    "apikey": settings.API_TOKEN,
-                                },
-                            }
-                        },
-                        "text": "订阅本合集全部",
-                    },
-                    {
-                        "component": "VBtn",
-                        "props": {"class": "text-warning mr-2", "variant": "tonal", "size": "small"},
-                        "events": {
-                            "click": {
-                                "api": "plugin/CollectionMissing/ignore_collection",
-                                "method": "get",
-                                "params": {
-                                    "server": str(server),
-                                    "collection": str(collection_id),
-                                    "apikey": settings.API_TOKEN,
-                                },
-                            }
-                        },
-                        "text": "忽略本合集全部",
-                    },
-                ]
-
+        panels = [self.__get_group_panel_content(g, expanded_groups) for g in group_list]
+        if panels:
             page_content.append({
-                "component": "div",
-                "props": {"class": "mb-4"},
-                "content": [
-                    {
-                        "component": "VCardTitle",
-                        "props": {"class": "pt-6 pb-2 text-base"},
-                        "content": [
-                            {
-                                "component": "span",
-                                "text": f"{group['name']} · 缺失 {len(records)} 部 · {server}",
-                            }
-                        ],
-                    },
-                    {
-                        "component": "div",
-                        "props": {"class": "pb-2"},
-                        "content": batch_buttons,
-                    },
-                    {
-                        "component": "div",
-                        "props": {"class": "flex flex-row flex-wrap gap-4 items-start"},
-                        "content": [self.__get_history_post_content(key, record) for key, record in records],
-                    },
-                ],
+                "component": "VExpansionPanels",
+                "props": {"multiple": True, "modelValue": open_indices},
+                "content": panels,
             })
 
         return page_content
 
+    def __get_group_panel_content(self, group: dict, expanded_groups: dict) -> dict:
+        """构建单个合集的折叠面板：标题含名称/服务器/缺失Chip/补齐进度，内容为海报网格。
+
+        每组合集默认只渲染前 GROUP_PAGE_SIZE 部，超出部分通过底部「展开全部」切换；
+        expanded_groups[gkey] 为 True 表示完整展开。面板自身的展开/收起由前端即时切换，
+        整页重渲染时以 expanded_groups 推导默认展开项。
+        """
+        server = group["server"]
+        collection_id = group["collection_id"]
+        records = sorted(group["records"], key=lambda x: x[1].get("title") or "")
+        gkey = collection_group_key(server, collection_id)
+        show_all = bool(expanded_groups.get(gkey, False))
+
+        # 补齐进度：取组内任一条有效统计，缺失时整块隐藏，不显示 0%
+        total = owned = None
+        for _, record in records:
+            t = record.get("collection_total")
+            o = record.get("collection_owned")
+            if isinstance(t, int) and isinstance(o, int):
+                total, owned = t, o
+                break
+        pct = 0
+        if isinstance(total, int) and isinstance(owned, int) and total > 0:
+            pct = min(100, int(round(owned / total * 100)))
+
+        progress_content = []
+        if isinstance(total, int) and isinstance(owned, int) and total > 0:
+            progress_content = [
+                {
+                    "component": "div",
+                    "props": {
+                        "class": "d-flex align-center flex-grow-1",
+                        "style": "max-width: 260px; min-width: 140px;",
+                    },
+                    "content": [
+                        {
+                            "component": "span",
+                            "props": {"class": "text-caption text-grey-darken-1 mr-2"},
+                            "text": f"已收 {owned}/{total}",
+                        },
+                        {
+                            "component": "div",
+                            "props": {
+                                "class": "flex-grow-1 bg-grey-lighten-3 rounded",
+                                "style": "height: 6px;",
+                            },
+                            "content": [
+                                {
+                                    "component": "div",
+                                    "props": {
+                                        "class": "bg-primary rounded",
+                                        "style": f"height: 100%; width: {pct}%;",
+                                    },
+                                }
+                            ],
+                        },
+                    ],
+                },
+            ]
+
+        # 批量操作按钮：仅当组内存在待处理记录时展示
+        batch_buttons = []
+        if any(r.get("status") == STATUS_PENDING for _, r in records):
+            batch_buttons = [
+                {
+                    "component": "VBtn",
+                    "props": {"class": "text-primary mr-2", "variant": "tonal", "size": "small"},
+                    "events": {
+                        "click": {
+                            "api": "plugin/CollectionMissing/subscribe_collection",
+                            "method": "get",
+                            "params": {
+                                "server": str(server),
+                                "collection": str(collection_id),
+                                "apikey": settings.API_TOKEN,
+                            },
+                        }
+                    },
+                    "text": "订阅本合集全部",
+                },
+                {
+                    "component": "VBtn",
+                    "props": {"class": "text-warning mr-2", "variant": "tonal", "size": "small"},
+                    "events": {
+                        "click": {
+                            "api": "plugin/CollectionMissing/ignore_collection",
+                            "method": "get",
+                            "params": {
+                                "server": str(server),
+                                "collection": str(collection_id),
+                                "apikey": settings.API_TOKEN,
+                            },
+                        }
+                    },
+                    "text": "忽略本合集全部",
+                },
+            ]
+
+        # 每组合集渲染数量：默认前 GROUP_PAGE_SIZE 部，完整展开时渲染全部
+        shown = records
+        if len(records) > GROUP_PAGE_SIZE and not show_all:
+            shown = records[:GROUP_PAGE_SIZE]
+
+        # 面板内操作条：批量按钮 + 右侧展开/收起
+        footer_buttons = []
+        if len(records) > GROUP_PAGE_SIZE:
+            footer_buttons = [
+                {
+                    "component": "VBtn",
+                    "props": {"variant": "tonal", "size": "small", "class": "text-primary"},
+                    "events": {
+                        "click": {
+                            "api": "plugin/CollectionMissing/toggle_group",
+                            "method": "get",
+                            "params": {"group": gkey, "apikey": settings.API_TOKEN},
+                        }
+                    },
+                    "text": f"展开全部（还有 {len(records) - GROUP_PAGE_SIZE} 部）" if not show_all else "收起",
+                },
+            ]
+
+        action_bar = [
+            {
+                "component": "div",
+                "props": {"class": "d-flex flex-wrap align-center gap-2 pb-2"},
+                "content": [
+                    *batch_buttons,
+                    {"component": "div", "props": {"class": "flex-grow-1"}},
+                    *footer_buttons,
+                ],
+            },
+        ]
+
+        grid_content = {
+            "component": "VRow",
+            "props": {"class": "d-flex flex-wrap"},
+            "content": [
+                {
+                    "component": "VCol",
+                    "props": {"cols": 6, "sm": 4, "md": 3, "lg": 2},
+                    "content": [self.__get_history_post_content(key, record)],
+                }
+                for key, record in shown
+            ],
+        }
+
+        return {
+            "component": "VExpansionPanel",
+            "props": {"class": "mb-2"},
+            "content": [
+                {
+                    "component": "VExpansionPanelTitle",
+                    "content": [
+                        {
+                            "component": "div",
+                            "props": {"class": "d-flex flex-wrap align-center gap-2 w-100 py-1"},
+                            "content": [
+                                {
+                                    "component": "span",
+                                    "props": {"class": "text-subtitle-1 font-weight-medium"},
+                                    "text": group["name"],
+                                },
+                                {
+                                    "component": "span",
+                                    "props": {"class": "text-caption text-grey-darken-1"},
+                                    "text": server,
+                                },
+                                {
+                                    "component": "VChip",
+                                    "props": {"size": "small", "variant": "tonal", "color": "primary"},
+                                    "text": f"缺失 {len(records)} 部",
+                                },
+                                *progress_content,
+                            ],
+                        },
+                    ],
+                },
+                {
+                    "component": "VExpansionPanelText",
+                    "content": [*action_bar, grid_content],
+                },
+            ],
+        }
+
+    @staticmethod
+    def __get_stat_card_content(label: str, value: int, color: str) -> dict:
+        """构建单张状态统计卡：大号数字 + 小号标签，数字按状态语义着色"""
+        return {
+            "component": "VCard",
+            "props": {"variant": "tonal", "class": "text-center pa-2"},
+            "content": [
+                {
+                    "component": "div",
+                    "props": {"class": f"text-h5 font-weight-bold text-{color}"},
+                    "text": f"{value}",
+                },
+                {
+                    "component": "div",
+                    "props": {"class": "text-caption text-grey-darken-1"},
+                    "text": label,
+                },
+            ],
+        }
+
     def __get_history_post_content(self, key: str, record: dict) -> dict:
-        """构建单条缺失电影卡片"""
+        """构建单张缺失电影海报卡：2:3 海报 + 评分/状态角标 + 片名两行 + 悬浮简介"""
         title = record.get("title") or "未知"
         year = record.get("year") or ""
         tmdb_id = record.get("tmdb_id")
         status = record.get("status") or STATUS_PENDING
         status_cn = STATUS_TEXT.get(status, status)
+        status_color = STATUS_COLOR.get(status, "grey")
 
         poster_path = record.get("poster_path") or ""
         if poster_path.startswith("http"):
@@ -1379,6 +1720,10 @@ class CollectionMissing(_PluginBase):
             poster = f"{POSTER_BASE}{poster_path}"
         else:
             poster = DEFAULT_POSTER
+
+        # 原生 title 悬浮简介：不依赖未验证的 VTooltip，信息提示场景足够
+        overview = (record.get("overview") or "").strip()
+        overview_tip = (overview[:120] + "…") if len(overview) > 120 else overview
 
         mp_domain = settings.MP_DOMAIN()
         link = f"#/media?mediaid=tmdb:{tmdb_id}&type={MediaType.MOVIE.value}"
@@ -1390,84 +1735,97 @@ class CollectionMissing(_PluginBase):
 
         action_buttons = self.__get_action_buttons_content(key, record)
 
+        # 评分角标文案：无效评分不渲染
+        vote = record.get("vote_average")
+        vote_text = f"★ {vote:.1f}" if isinstance(vote, (int, float)) else ""
+
+        # 已处理视觉退让：已忽略整卡降透明，已订阅海报叠淡绿蒙层
+        card_class = "d-flex flex-column"
+        if status == STATUS_IGNORED:
+            card_class += " opacity-60"
+
+        poster_overlay = []
+        if status == STATUS_SUBSCRIBED:
+            poster_overlay.append({
+                "component": "div",
+                "props": {
+                    "class": "bg-success",
+                    "style": "position: absolute; top: 0; left: 0; right: 0; bottom: 0; "
+                             "opacity: 0.12; pointer-events: none; border-radius: 4px 4px 0 0;",
+                },
+            })
+
         return {
             "component": "VCard",
             "props": {
                 "variant": "tonal",
-                "style": "width: 320px; min-height: 240px;",
+                "class": card_class,
+                "style": "height: 100%;",
+                "title": overview_tip,
             },
             "content": [
+                # 海报区：评分角标左上、状态角标右上
                 {
                     "component": "div",
-                    "props": {"class": "flex flex-row"},
+                    "props": {"class": "position-relative"},
                     "content": [
                         {
                             "component": "VImg",
                             "props": {
                                 "src": poster,
-                                "height": 240,
-                                "width": 160,
+                                "lazy-src": DEFAULT_POSTER,
                                 "aspect-ratio": "2/3",
-                                "class": "object-cover shadow",
                                 "cover": True,
+                                "class": "rounded-t",
                                 "transition": True,
                             },
                         },
+                        *poster_overlay,
+                        *([{
+                            "component": "span",
+                            "props": {
+                                "class": "position-absolute top-0 left-0 ma-1 rounded pa-1 text-caption text-white",
+                                "style": "background: rgba(0, 0, 0, 0.65);",
+                            },
+                            "text": vote_text,
+                        }] if vote_text else []),
                         {
-                            "component": "div",
-                            "props": {"class": "flex flex-col", "style": "width: 160px;"},
-                            "content": [
-                                {
-                                    "component": "VCardTitle",
-                                    "props": {
-                                        "class": "pt-4 pl-4 pr-4 text-base",
-                                        "style": "word-break: break-word; white-space: normal; line-height: 1.2;",
-                                    },
-                                    "content": [
-                                        {
-                                            "component": "a",
-                                            "props": {
-                                                "href": f"{link}",
-                                                "target": "_blank",
-                                                "style": "text-decoration: none; color: inherit;",
-                                            },
-                                            "text": title,
-                                        }
-                                    ],
-                                },
-                                {
-                                    "component": "VCardText",
-                                    "props": {"class": "pa-0 pl-4 pr-4 py-1 whitespace-nowrap"},
-                                    "text": f"年份: {year or '-'}",
-                                },
-                                {
-                                    "component": "VCardText",
-                                    "props": {"class": "pa-0 pl-4 pr-4 py-1 whitespace-nowrap"},
-                                    "text": f"评分: {record.get('vote_average') or '-'}",
-                                },
-                                {
-                                    "component": "VCardText",
-                                    "props": {"class": "pa-0 pl-4 pr-4 py-1 whitespace-nowrap"},
-                                    "text": f"上映: {record.get('release_date') or '-'}",
-                                },
-                                {
-                                    "component": "VCardText",
-                                    "props": {"class": "pa-0 pl-4 pr-4 py-1 whitespace-nowrap"},
-                                    "text": f"状态: {status_cn}",
-                                },
-                                {
-                                    "component": "VCardText",
-                                    "props": {"class": "pa-0 pl-4 pr-4 py-1 whitespace-nowrap"},
-                                    "text": f"检查: {record.get('last_check') or '-'}",
-                                },
-                            ],
+                            "component": "span",
+                            "props": {
+                                "class": f"position-absolute top-0 right-0 ma-1 bg-{status_color} rounded pa-1 text-caption text-white",
+                            },
+                            "text": status_cn,
                         },
                     ],
                 },
+                # 信息区：片名两行截断 + 年份 · 上映日期
+                {
+                    "component": "div",
+                    "props": {"class": "pa-2 flex-grow-1"},
+                    "content": [
+                        {
+                            "component": "a",
+                            "props": {
+                                "href": f"{link}",
+                                "target": "_blank",
+                                "class": "text-body-2 font-weight-medium text-decoration-none",
+                                "style": "color: inherit; display: -webkit-box; "
+                                         "-webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;",
+                            },
+                            "text": title,
+                        },
+                        {
+                            "component": "div",
+                            "props": {"class": "text-caption text-grey-darken-1 mt-1"},
+                            "text": f"{year or '-'} · {record.get('release_date') or '-'}",
+                        },
+                    ],
+                },
+                # 底部操作按钮
                 {
                     "component": "VBtnToggle",
                     "props": {
-                        "class": "d-flex mt-auto",
+                        "class": "mt-auto",
                         "style": "width: 100%; display: flex;",
                         "variant": "tonal",
                         "rounded": "0",

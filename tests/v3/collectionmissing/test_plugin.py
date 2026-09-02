@@ -141,6 +141,223 @@ class TestApiContract:
         assert plugin_instance._CollectionMissing__check_apikey("wrong") is False
 
 
+class TestGroupExpandApi:
+    """合集展开状态端点：翻转、批量、鉴权、随记录清空。"""
+
+    GROUP_A = "我的Emby:645"
+    GROUP_B = "我的Emby:999"
+
+    def _seed(self, instance):
+        instance._store = {
+            "history": {
+                "details": {
+                    "我的Emby:645:1": _make_record(
+                        tmdb_id=1, media_id="1", collection_id=645
+                    ),
+                    "我的Emby:999:2": _make_record(
+                        tmdb_id=2, media_id="2", collection_id=999
+                    ),
+                }
+            }
+        }
+
+    def test_toggle_group_flips_and_is_idempotent_pair(self, plugin_instance):
+        self._seed(plugin_instance)
+        first = plugin_instance.toggle_group(self.GROUP_A)
+        assert first.success is True
+        assert plugin_instance.get_data("expanded_groups") == {self.GROUP_A: True}
+
+        second = plugin_instance.toggle_group(self.GROUP_A)
+        assert second.success is True
+        assert plugin_instance.get_data("expanded_groups") == {self.GROUP_A: False}
+
+    def test_toggle_group_accepts_missing_apikey(self, plugin_instance):
+        self._seed(plugin_instance)
+        assert plugin_instance.toggle_group(self.GROUP_A).success is True
+        assert plugin_instance.toggle_group(self.GROUP_A, "wrong").success is False
+
+    def test_toggle_group_rejects_empty_key(self, plugin_instance):
+        self._seed(plugin_instance)
+        resp = plugin_instance.toggle_group("")
+        assert resp.success is False
+        assert "合集标识" in resp.message
+
+    def test_set_all_groups_only_touches_existing_collections(self, plugin_instance):
+        """批量展开只覆盖当前记录里存在的合集，不留下已消失合集的垃圾状态。"""
+        self._seed(plugin_instance)
+        plugin_instance.save_data("expanded_groups", {"已删除的服务器:1": True})
+
+        resp = plugin_instance.set_all_groups("true")
+        assert resp.success is True
+        assert plugin_instance.get_data("expanded_groups") == {
+            self.GROUP_A: True,
+            self.GROUP_B: True,
+        }
+
+    def test_set_all_groups_collapses(self, plugin_instance):
+        self._seed(plugin_instance)
+        plugin_instance.set_all_groups("true")
+        assert plugin_instance.set_all_groups("false").success is True
+        assert plugin_instance.get_data("expanded_groups") == {
+            self.GROUP_A: False,
+            self.GROUP_B: False,
+        }
+
+    def test_set_all_groups_rejects_wrong_apikey(self, plugin_instance):
+        self._seed(plugin_instance)
+        assert plugin_instance.set_all_groups("true", "wrong").success is False
+
+    def test_clear_all_records_resets_expand_state(self, plugin_instance):
+        self._seed(plugin_instance)
+        plugin_instance.set_all_groups("true")
+        assert plugin_instance.clear_records("all").success is True
+        assert plugin_instance.get_data("expanded_groups") == {}
+
+
+class TestCollectionStats:
+    """合集补齐进度字段：组内对齐、不跨组、可重复执行。"""
+
+    def _backfill(self, instance):
+        return instance._CollectionMissing__backfill_collection_stats()
+
+    def test_propagates_within_group(self, plugin_instance):
+        """同组内任一条已有统计时，同步给组内其它记录。"""
+        lacking = _make_record(tmdb_id=1, media_id="1")
+        having = _make_record(
+            tmdb_id=2, media_id="2", collection_total=26, collection_owned=24
+        )
+        plugin_instance._store["history"] = {
+            "details": {"k1": lacking, "k2": having}
+        }
+
+        assert self._backfill(plugin_instance) == 1
+        assert lacking["collection_total"] == 26
+        assert lacking["collection_owned"] == 24
+        # 幂等：再次执行不再改动
+        assert self._backfill(plugin_instance) == 0
+
+    def test_skips_group_without_stats(self, plugin_instance):
+        """整组都没有统计时保持原样，不写 0 或占位值。"""
+        record = _make_record(tmdb_id=1, media_id="1")
+        plugin_instance._store["history"] = {"details": {"k1": record}}
+
+        assert self._backfill(plugin_instance) == 0
+        assert "collection_total" not in record
+        assert "collection_owned" not in record
+
+    def test_does_not_cross_groups(self, plugin_instance):
+        """不同 collection_id 的记录不共享统计。"""
+        record = _make_record(tmdb_id=1, media_id="1")
+        other = _make_record(
+            tmdb_id=2,
+            media_id="2",
+            collection_id=999,
+            collection_total=26,
+            collection_owned=24,
+        )
+        plugin_instance._store["history"] = {
+            "details": {"k1": record, "k2": other}
+        }
+
+        assert self._backfill(plugin_instance) == 0
+        assert "collection_total" not in record
+
+    def test_empty_details(self, plugin_instance):
+        """没有记录时安全返回 0。"""
+        plugin_instance._store["history"] = {"details": {}}
+        assert self._backfill(plugin_instance) == 0
+
+
+class TestPageRendering:
+    """详情页渲染：海报卡、进度条降级、折叠分页、默认展开项。"""
+
+    def _seed_one(self, instance, **record_overrides):
+        instance._store["history"] = {
+            "details": {
+                "我的Emby:645:206647": _make_record(
+                    media_source="themoviedb",
+                    media_id="206647",
+                    **record_overrides,
+                )
+            },
+        }
+
+    def test_poster_card_structure(self, plugin_instance):
+        """海报卡：2:3 海报、评分角标、状态角标、片名链接、长简介截断为悬浮提示。"""
+        self._seed_one(
+            plugin_instance,
+            vote_average=7.4,
+            overview="这是一段很长的电影简介。" * 30,
+        )
+        raw = repr(plugin_instance.get_page())
+        assert "VImg" in raw
+        assert "aspect-ratio" in raw
+        assert "★ 7.4" in raw
+        assert "position-absolute" in raw
+        assert "#/media?mediaid=tmdb:206647" in raw
+        assert "…" in raw  # 超过 120 字的简介被截断
+
+    def test_progress_bar_shown_when_stats_present(self, plugin_instance):
+        """有统计字段时渲染「已收 N/M」与按比例填充的进度条。"""
+        self._seed_one(plugin_instance, collection_total=26, collection_owned=24)
+        raw = repr(plugin_instance.get_page())
+        assert "已收 24/26" in raw
+        assert "width: 92%" in raw  # 24/26 ≈ 92%
+
+    def test_progress_bar_hidden_when_stats_missing(self, plugin_instance):
+        """统计字段缺失时（存量记录/TMDB 异常）隐藏进度条，不显示 0%。"""
+        self._seed_one(plugin_instance)
+        raw = repr(plugin_instance.get_page())
+        assert "已收" not in raw
+
+    def test_group_collapses_beyond_page_size(self, plugin_instance):
+        """超过 GROUP_PAGE_SIZE 的合集默认只渲染前 N 部，并提供「展开全部」按钮。"""
+        page_size = _plugin().GROUP_PAGE_SIZE
+        details = {
+            f"我的Emby:645:{i}": _make_record(tmdb_id=i, media_id=str(i), title=f"电影 {i}")
+            for i in range(1, page_size + 3)
+        }
+        plugin_instance._store["history"] = {"details": details}
+
+        raw = repr(plugin_instance.get_page())
+        assert "VExpansionPanels" in raw
+        assert "toggle_group" in raw
+        assert "展开全部（还有 2 部）" in raw
+        # 只渲染了前 N 张海报卡
+        assert raw.count("aspect-ratio") == page_size
+
+    def test_group_show_all_renders_everything(self, plugin_instance):
+        """expanded_groups 为 True 的合集完整渲染全部海报。"""
+        page_size = _plugin().GROUP_PAGE_SIZE
+        details = {
+            f"我的Emby:645:{i}": _make_record(tmdb_id=i, media_id=str(i), title=f"电影 {i}")
+            for i in range(1, page_size + 3)
+        }
+        plugin_instance._store["history"] = {"details": details}
+        plugin_instance._store["expanded_groups"] = {"我的Emby:645": True}
+
+        raw = repr(plugin_instance.get_page())
+        assert raw.count("aspect-ratio") == page_size + 2
+        assert "收起" in raw
+
+    def test_open_indices_from_expand_state(self, plugin_instance):
+        """expanded_groups 中 True 的分组出现在 modelValue 默认展开项里。"""
+        details = {
+            "我的Emby:645:1": _make_record(
+                tmdb_id=1, media_id="1", collection_id=645, collection_name="A 合集"
+            ),
+            "我的Emby:999:2": _make_record(
+                tmdb_id=2, media_id="2", collection_id=999, collection_name="B 合集"
+            ),
+        }
+        plugin_instance._store["history"] = {"details": details}
+        plugin_instance._store["expanded_groups"] = {"我的Emby:999": True}
+
+        raw = repr(plugin_instance.get_page())
+        # 按名称排序 A(0) B(1)，B 合集完整展开 → modelValue [1]
+        assert "'modelValue': [1]" in raw
+
+
 class TestPageContract:
     """详情页事件与 V2 保持兼容：仍携带 apikey 参数。"""
 
@@ -158,3 +375,25 @@ class TestPageContract:
         raw = repr(page)
         assert "apikey" in raw
         assert "plugin/CollectionMissing/" in raw
+
+    def test_page_top_section_builds(self, plugin_instance):
+        """顶部区：四张统计卡、实心筛选条、全部展开/收起、清空待处理。"""
+        plugin_instance._store["history"] = {
+            "last_scan": "2026-09-01 10:00:00",
+            "details": {
+                "我的Emby:645:206647": _make_record(
+                    media_source="themoviedb", media_id="206647"
+                )
+            },
+        }
+        raw = repr(plugin_instance.get_page())
+        # 四类统计卡标签（订阅失败此前从未展示，属本次新增）
+        for label in ("待处理", "已订阅", "已忽略", "订阅失败"):
+            assert label in raw
+        # 工具条：筛选、全部展开/收起、清空待处理
+        assert "set_filter" in raw
+        assert "set_all_groups" in raw
+        assert "全部展开" in raw
+        assert "清空待处理" in raw
+        # 次级信息行：统计总览与上次扫描时间
+        assert "上次扫描" in raw
