@@ -49,7 +49,7 @@ class CollectionMissing(_PluginBase):
     """扫描媒体库中的电影合集（BoxSet），与 TMDB 合集全量片单对比，列出缺失电影供手动确认订阅"""
 
     # 插件名称
-    plugin_name = "Emby 电影合集缺集订阅"
+    plugin_name = "Emby 电影合集缺失订阅"
     # 插件描述
     plugin_desc = "扫描 Emby/Jellyfin 媒体库中的电影合集，对比 TMDB 合集全量片单，列出缺失电影供手动确认订阅"
     # 插件图标
@@ -231,7 +231,7 @@ class CollectionMissing(_PluginBase):
             return [
                 {
                     "id": "CollectionMissing",
-                    "name": "Emby 电影合集缺集订阅",
+                    "name": "Emby 电影合集缺失订阅",
                     "trigger": CronTrigger.from_crontab(self._cron),
                     "func": self.__scan,
                     "kwargs": {},
@@ -313,7 +313,7 @@ class CollectionMissing(_PluginBase):
                     text_lines.append("请到插件详情页确认是否订阅")
                 self.post_message(
                     mtype=NotificationType.SiteMessage,
-                    title="【Emby 电影合集缺集订阅】",
+                    title="【Emby 电影合集缺失订阅】",
                     text="\n".join(text_lines),
                 )
 

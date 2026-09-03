@@ -1,4 +1,4 @@
-"""Emby 电影合集缺集订阅（CollectionMissing）V3 实现的合同回归测试。
+"""Emby 电影合集缺失订阅（CollectionMissing）V3 实现的合同回归测试。
 
 用例覆盖：
 - 记录写入采用 V3 统一媒体身份（media_source + media_id 成对）；
