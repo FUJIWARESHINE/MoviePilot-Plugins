@@ -119,7 +119,7 @@ class CollectionMissing(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/FUJIWARESHINE/MoviePilot-Plugins/main/icons/CollectionMissing.png"
     # 插件版本，必须与 package.v3.json 中保持一致
-    plugin_version = "2.1.3"
+    plugin_version = "2.1.4"
     # 插件作者
     plugin_author = "FUJIWARESHINE"
     # 作者主页
@@ -1840,12 +1840,15 @@ class CollectionMissing(_PluginBase):
     def __get_action_buttons_content(self, key: str, record: dict) -> List[dict]:
         """按记录状态生成操作按钮
 
-        设计要点（v2.1.3 方案 C）：
-        - 按钮条由调用方整条铺 surface-variant 底色 + 12/14px 内边距，把操作区
-          从海报/信息区里"托"出来，不再贴底发扁；
+        设计要点（v2.1.4 方案 C 调色）：
+        - 按钮条由调用方整条铺浅灰底色（#f5f5f5）+ 顶部 1px 浅黑边 + 12/14px 内边距，
+          把操作区从海报/信息区里"托"出来，不再贴底发扁；
+          用显式 hex 而非 bg-surface-variant，是因为 MoviePilot V3 渲染器对
+          Vuetify 3 utility class 支持不完整（实测 surface-variant 在详情页渲染成了
+          黑色），改用最稳的 inline style；暗色模式下 #f5f5f5 会偏亮，需要时再切。
         - 文字按钮统一胶囊化（rounded=pill）、min-height 38px；
         - 主操作（订阅/恢复/重试）用 elevated 实心主题色 + 阴影形成视觉焦点，
-          次操作（忽略）用 outlined 描边 + bg-surface 底保持视觉退让；
+          次操作（忽略）用 outlined 描边（容器浅灰底透出，与描边形成层次）；
         - "删除"语义最弱，压成 40x40 圆形图标按钮，图标放大到 19px，
           既保证窄卡片下文字按钮不被截断，又与 38px 高的文字按钮视觉配平；
         - 文字按钮加 `text-no-wrap` 强制单行，配合 `flex-grow-1` 自动均分；
