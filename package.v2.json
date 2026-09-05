@@ -19,12 +19,13 @@
     "name": "慕雪自动签到",
     "description": "自动签到慕雪阁与两个 NexusPHP 站点，Cookie 从 MoviePilot 站点管理读取。",
     "labels": "签到,PT,NexusPHP,慕雪阁,Depth Studio",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "icon": "MuxueSignin.png",
     "author": "FUJIWARESHINE",
     "system_version": ">=2.15.0",
     "level": 2,
     "history": {
+      "v1.0.2": "修复站点管理 domain 与插件默认域名不一致导致 Cookie 读不到的问题：站点管理按域名精确匹配，若首次添加时 domain 为 muxuege.org、www.pt.muxuege.org 或带 scheme/路径/端口，先精确后按常见变体（去 scheme、去 www、去/加 pt 子域、按 URL 后缀）回退匹配；匹配失败时打印站点管理里所有站点的 domain/url 便于排查。",
       "v1.0.1": "修复首次安装后打开配置页提示「配置加载失败」的问题：配置为空时 init_plugin 触发 KeyError，导致 MoviePilot 放弃加载本插件；同时修复通知标题恒为「部分签到失败」、可变类属性在分身间共享等问题，并为 get_form/get_page 增加异常兜底。",
       "v1.0.0": "首个版本：双站签到，GET 探测优先（NexusPHP 关闭验证码时 GET 自动签到），识别验证码并提示手动签到，单站失败隔离。"
     }

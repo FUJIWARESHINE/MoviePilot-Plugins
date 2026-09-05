@@ -73,7 +73,7 @@ class MuxueSignin(_PluginBase):
     plugin_name = "慕雪自动签到"
     plugin_desc = "自动签到慕雪阁、Depth Studio 站点，Cookie 从站点管理读取"
     plugin_icon = "MuxueSignin.png"
-    plugin_version = "1.0.1"
+    plugin_version = "1.0.2"
     plugin_author = "FUJIWARESHINE"
     plugin_config_prefix = "muxuesignin_"
     plugin_order = 21
@@ -873,15 +873,103 @@ class MuxueSignin(_PluginBase):
 
     def __get_site_cookie(self, domain: str, name: str) -> str:
         try:
-            site = SiteOper().get_by_domain(domain)
+            site = self.__lookup_site(domain)
             if site and site.cookie:
-                logger.info(f"✅ 读取到 {name}（{domain}）的 Cookie")
+                actual_domain = getattr(site, "domain", domain) or domain
+                logger.info(f"✅ 读取到 {name}（{actual_domain}）的 Cookie")
                 return site.cookie.strip()
             logger.warning(f"⚠️ 未在站点管理中找到 {name}（{domain}）的 Cookie")
+            self.__log_all_sites(name)
             return ""
         except Exception as e:
             logger.error(f"读取 {name} Cookie 异常: {e}")
             return ""
+
+    def __lookup_site(self, domain: str) -> Optional[Any]:
+        """
+        按域名查找站点，先做精确匹配，失败时按常见域名变体回退。
+
+        MoviePilot 站点管理里存的是 `domain` 字段，且该字段在首次添加站点时
+        写死、后续改 URL 不会同步更新，常出现插件查 `pt.muxuege.org` 但库里是
+        `muxuege.org` 的情况。这里兼容 scheme、尾斜杠、www、pt 子域等差异。
+        """
+        def _norm(d: Any) -> str:
+            if not d:
+                return ""
+            s = str(d).strip().lower()
+            for prefix in ("https://", "http://"):
+                if s.startswith(prefix):
+                    s = s[len(prefix):]
+            # 去掉路径与端口
+            s = s.split("/")[0].split(":")[0]
+            if s.startswith("www."):
+                s = s[4:]
+            return s
+
+        req = _norm(domain)
+        if not req:
+            return None
+
+        # 候选域名：自身、去掉 pt 子域、加上 pt 子域
+        candidates = {req}
+        parts = req.split(".")
+        if len(parts) >= 3 and parts[0] not in ("www", ""):
+            candidates.add(".".join(parts[1:]))
+        if len(parts) == 2:
+            candidates.add(f"pt.{req}")
+
+        # 1. 按候选 domain 精确查
+        for cand in candidates:
+            if not cand:
+                continue
+            site = SiteOper().get_by_domain(cand)
+            if site:
+                return site
+
+        # 2. 兜底：遍历所有站点，按 domain/url 模糊匹配
+        try:
+            all_sites = SiteOper().list() or []
+        except Exception:
+            all_sites = []
+        for site in all_sites:
+            if not site:
+                continue
+            site_domain = _norm(site.domain)
+            site_url = _norm(site.url)
+            if site_domain in candidates:
+                return site
+            if site_url and req in site_url:
+                return site
+            # 子域/父域关系（要求差异至少包含一个点，避免 .com 误匹配）
+            for cand in candidates:
+                if site_domain and site_domain != cand:
+                    if site_domain.endswith(cand):
+                        extra = site_domain[:-len(cand)].rstrip(".")
+                        if extra and "." in extra:
+                            return site
+                    if cand.endswith(site_domain):
+                        extra = cand[:-len(site_domain)].rstrip(".")
+                        if extra and "." in extra:
+                            return site
+        return None
+
+    def __log_all_sites(self, name: str):
+        """失败时打印站点管理里所有站点的域名/URL，方便排查"""
+        try:
+            sites = SiteOper().list() or []
+            lines = []
+            for site in sites:
+                has_cookie = "有" if (getattr(site, "cookie", None) or "").strip() else "无"
+                lines.append(
+                    f"  - 名称={site.name} | domain={site.domain} | url={site.url} | cookie={has_cookie}"
+                )
+            if lines:
+                logger.warning(
+                    f"慕雪自动签到：未匹配到 {name}，当前「站点管理」中的站点如下（请核对 domain 列）：\n"
+                    + "\n".join(lines)
+                )
+        except Exception:
+            pass
 
     def __record(self, site_key: str, status: str, message: str) -> Dict[str, Any]:
         record = {
