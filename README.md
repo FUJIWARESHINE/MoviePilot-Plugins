@@ -3,8 +3,8 @@
 扫描 Emby / Jellyfin 媒体库中的**电影合集（BoxSet / Collection）**，与 TMDB 合集全量片单做差集，把**缺失的电影列出**，之后逐部或按合集批量决定是否订阅。
 
 > 同时支持 MoviePilot **V2（v2.15.0+）** 与 **V3（v3.0.0+）**。
-> - V2 版本：`v1.2.0`（`plugins.v2/`）
-> - V3 版本：`v2.1.0`（`plugins.v3/`，按官方迁移规范完成 V3 独立适配）
+> - V2 版本：`v1.3.0`（`plugins.v2/`）
+> - V3 版本：`v2.1.5`（`plugins.v3/`，按官方迁移规范完成 V3 独立适配）
 
 
 ## 功能
@@ -22,7 +22,7 @@
 - 发现新增缺失时支持系统通知
 - 远程命令 `/collection_missing` 立即扫描
 
-## V3 适配说明（v1.3.0 / v2.1.4）
+## V3 适配说明（v1.3.0 / v2.1.5）
 
 对照 [官方 V3 插件迁移文档](https://github.com/jxxghp/MoviePilot-Plugins/blob/main/docs/V3_Plugin_Adaptation.md) 完成：
 

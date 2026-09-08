@@ -119,7 +119,7 @@ class CollectionMissing(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/FUJIWARESHINE/MoviePilot-Plugins/main/icons/CollectionMissing.png"
     # 插件版本，必须与 package.v3.json 中保持一致
-    plugin_version = "2.1.4"
+    plugin_version = "2.1.5"
     # 插件作者
     plugin_author = "FUJIWARESHINE"
     # 作者主页
@@ -1823,14 +1823,18 @@ class CollectionMissing(_PluginBase):
                         },
                     ],
                 },
-                # 底部操作按钮：整条铺 surface-variant 底色 + 顶部分隔线 + 12/14px 内边距，
-                # 把操作区从海报/信息区里"托"出来（v2.1.3 方案 C）；
-                # 容器加 flex-shrink-0 防止上方长片名/长简介把按钮区挤出可视范围
+                # 底部操作按钮：整条铺浅灰底色 + 顶部分隔线，把操作区从海报/信息区里
+                # "托"出来（v2.1.3 方案 C 布局）；用显式 hex 而非 bg-surface-variant，
+                # 是因为 MoviePilot 渲染器对 Vuetify 3 utility class 支持不完整
+                #（实测整条被渲染成纯黑），inline style 最稳；
+                # 容器加 flex-shrink-0 防止上方长片名把按钮区挤出可视范围
                 {
                     "component": "div",
                     "props": {
-                        "class": "d-flex w-100 mt-auto flex-shrink-0 align-center gap-2 "
-                                 "bg-surface-variant border-t rounded-b pt-3 pb-3 px-3",
+                        "class": "d-flex w-100 mt-auto",
+                        "style": "flex-shrink: 0; align-items: center; gap: 8px; "
+                                 "background: #f5f5f5; border-top: 1px solid rgba(0, 0, 0, 0.12); "
+                                 "border-radius: 0 0 4px 4px; padding: 12px 14px;",
                     },
                     "content": action_buttons,
                 },
@@ -1920,12 +1924,12 @@ class CollectionMissing(_PluginBase):
         if status == STATUS_PENDING:
             return [
                 _text_btn("subscribe", "订阅", "primary", "elevated"),
-                _text_btn("ignore", "忽略", "grey", "outlined", "bg-surface"),
+                _text_btn("ignore", "忽略"),
                 _icon_btn("delete", "mdi-delete-outline", "error", "删除"),
             ]
         if status == STATUS_SUBSCRIBED:
             return [
-                _text_btn("ignore", "忽略", "warning", "outlined", "bg-surface"),
+                _text_btn("ignore", "忽略", "warning", "outlined"),
                 _icon_btn("delete", "mdi-delete-outline", "error", "删除"),
             ]
         if status == STATUS_IGNORED:
