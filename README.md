@@ -15,19 +15,19 @@
 - 可选：跳过未上映电影、TMDB 评分下限过滤
 - 详情页顶部四张状态统计卡（待处理 / 已订阅 / 已忽略 / 订阅失败），一眼看清全局
 - 合集分组折叠展示：标题栏带缺失数量 Chip 与「已收 N / 共 M」补齐进度条，每组默认渲染前 12 部，可展开全部
-- 响应式海报墙：2:3 海报 + 评分角标 + 状态角标 + 悬浮简介，手机 2 列 / 平板 3~4 列 / 桌面 6 列
+- 响应式海报墙：2:3 海报 + 评分角标 + 状态角标 + 片名两行截断，手机 2 列 / 平板 3~4 列 / 桌面 6 列
 - 单部操作：订阅 / 忽略 / 恢复 / 删除
 - 合集批量操作：一键订阅 / 忽略本合集全部待处理
 - 页面筛选：待处理 / 已订阅 / 已忽略 / 全部，支持一键全部展开 / 收起
 - 发现新增缺失时支持系统通知
 - 远程命令 `/collection_missing` 立即扫描
 
-## V3 适配说明（v1.2.0 / v2.0.0 / v2.1.0）
+## V3 适配说明（v1.3.0 / v2.1.4）
 
 对照 [官方 V3 插件迁移文档](https://github.com/jxxghp/MoviePilot-Plugins/blob/main/docs/V3_Plugin_Adaptation.md) 完成：
 
 - 新增 `plugins.v3/collectionmissing/`（V3 专用实现，版本 `2.0.0`），`package.v3.json` 声明 `system_version: ">=3.0.0"`；`package.v2.json` 同名条目声明 `"v3": false`，避免 V3 宿主回退加载旧合同实现
-- V2 实现保留在 `plugins.v2/`（版本 `1.2.0`），行为不变，V2 宿主继续正常使用
+- V2 实现保留在 `plugins.v2/`（版本 `1.3.0`），已同步 V3 `v2.1.x` 的详情页重构与扫描改动，V2 宿主继续正常使用
 - V3 实现导入全部迁移到稳定 SDK：`app.sdk.config` / `app.sdk.events` / `app.sdk.logging` / `app.sdk.services`
 - 识别与订阅链路统一按 `media_source` + `media_id` 成对身份调用（`MediaChain.recognize_media`、`SubscribeChain.add`、`SubscribeOper.exists`），不再使用 `tmdbid` 参数
 - 记录数据同时保存统一身份字段（`media_source` / `media_id`），`tmdb_id` 作为 TMDB 合集维度的单源辅助字段保留；插件初始化时对存量 v1.x 记录执行幂等的统一身份迁移
