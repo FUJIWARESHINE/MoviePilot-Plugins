@@ -30,5 +30,20 @@
       "v1.0.1": "修复首次安装后打开配置页提示「配置加载失败」的问题：配置为空时 init_plugin 触发 KeyError，导致 MoviePilot 放弃加载本插件；同时修复通知标题恒为「部分签到失败」、可变类属性在分身间共享等问题，并为 get_form/get_page 增加异常兜底。",
       "v1.0.0": "首个版本：双站签到，GET 探测优先（NexusPHP 关闭验证码时 GET 自动签到），识别验证码并提示手动签到，单站失败隔离。"
     }
+  },
+  "MediaMissingSubscribe": {
+    "name": "Emby媒体库缺失订阅",
+    "description": "扫描媒体库中剧集缺失的季集与电影合集（BoxSet）缺失的电影，明确列出缺失的季与集，支持自动或手动确认订阅补全。",
+    "labels": "媒体库,查缺,订阅,剧集,电影合集,Emby,Jellyfin",
+    "version": "1.0.0",
+    "icon": "MediaMissingSubscribe.png",
+    "author": "FUJIWARESHINE",
+    "system_version": ">=2.15.0",
+    "level": 2,
+    "history": {
+      "v1.0.0": "首个版本：检测剧集库缺失的季集并对接订阅补全，缺失记录按季/集明确列出；新增电影合集（BoxSet）缺失检测与订阅，合集中没有上映日期的电影直接排除不显示；剧集卡片新增可折叠的「缺失季集明细」下拉，逐季列出缺失的具体集数（整季缺失单独标注），默认收起不改变卡片原有排版；详情页顶部支持「剧集缺失 / 电影合集缺失」双视图切换；提供远程命令 /media_missing 立即扫描。"
+    },
+    "v3": false,
+    "release": true
   }
 }

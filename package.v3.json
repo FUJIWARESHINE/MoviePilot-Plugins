@@ -19,5 +19,20 @@
       "v2.0.0": "V3 独立版本：迁移至 plugins.v3，改用 app.sdk 稳定导入，识别与订阅链路统一按 media_source + media_id 成对身份调用，插件 API 声明 auth=bear 并补全 response_model，为存量记录提供幂等的统一媒体身份迁移。",
       "v1.0.0": "首个版本：支持 Emby 与 Jellyfin 电影合集缺失扫描，详情页手动确认订阅/忽略/删除/恢复，提供按合集批量订阅与远程命令 /collection_missing。"
     }
+  },
+  "MediaMissingSubscribe": {
+    "name": "Emby媒体库缺失订阅",
+    "description": "扫描媒体库中剧集缺失的季集与电影合集（BoxSet）缺失的电影，明确列出缺失的季与集，支持自动或手动确认订阅补全。",
+    "labels": "媒体库,查缺,订阅,剧集,电影合集,Emby,Jellyfin",
+    "version": "2.0.0",
+    "icon": "MediaMissingSubscribe.png",
+    "author": "FUJIWARESHINE",
+    "level": 2,
+    "system_version": ">=3.0.0",
+    "release": true,
+    "history": {
+      "v2.0.0": "V3 独立版本：迁移至 plugins.v3，导入改用 app.sdk 稳定入口（配置/事件/日志/服务）与 app.db.oper.subscribe；识别与订阅链路统一按 media_source + media_id 成对身份调用；插件自有数据补齐统一身份字段并提供幂等的存量迁移（剧集与电影合集分别处理）；插件 API 声明 auth=bear 并补全 response_model；媒体库条目读取兼容 V3 的统一身份模型并保留单源字段回退，宿主未提供 MediaServerChain 的 librarys/items/episodes 时自动回退到原生 Emby/Jellyfin 接口。",
+      "v1.0.0": "首个版本：检测剧集库缺失的季集并对接订阅补全，缺失记录按季/集明确列出；新增电影合集（BoxSet）缺失检测与订阅，合集中没有上映日期的电影直接排除不显示；剧集卡片新增可折叠的「缺失季集明细」下拉，逐季列出缺失的具体集数（整季缺失单独标注），默认收起不改变卡片原有排版；详情页顶部支持「剧集缺失 / 电影合集缺失」双视图切换；提供远程命令 /media_missing 立即扫描。"
+    }
   }
 }
