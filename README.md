@@ -134,15 +134,16 @@
 
 ---
 
-## Emby媒体库缺失订阅
+## 媒体库缺失明细订阅
 
 扫描媒体库，找出**剧集缺失的季与集**和**电影合集（BoxSet）缺失的电影**，在插件详情页逐条列出，由你决定是否订阅补全。
 
 > 同时支持 MoviePilot **V2（v2.15.0+）** 与 **V3（v3.0.0+）**。
-> - V2 版本：`v1.0.0`（`plugins.v2/`）
-> - V3 版本：`v2.0.0`（`plugins.v3/`，按官方迁移规范完成 V3 独立适配）
+> - V2 版本：`v1.0.1`（`plugins.v2/`）
+> - V3 版本：`v2.0.1`（`plugins.v3/`，按官方迁移规范完成 V3 独立适配）
 >
-> 插件 ID 为 `MediaMissingSubscribe`，与本仓库的 `CollectionMissing`、与原作者已删库的 `GetMissingEpisodes` 均不同，可共存互不冲突。
+> 插件 ID 为 `MediaMissingSubscribe`，与本仓库的 `CollectionMissing`、与插件市场里既有的
+> `EmbyMissingSubscribe`（Emby 缺失订阅）、与原作者已删库的 `GetMissingEpisodes` 均不同，可共存互不冲突。
 
 ### 特性
 
@@ -178,7 +179,7 @@
 ### 安装
 
 1. MoviePilot → 插件 → 仓库管理 → 添加仓库 `https://github.com/FUJIWARESHINE/MoviePilot-Plugins`
-2. 在市场中找到「Emby媒体库缺失订阅」安装
+2. 在市场中找到「媒体库缺失明细订阅」安装
 
 ### 配置
 

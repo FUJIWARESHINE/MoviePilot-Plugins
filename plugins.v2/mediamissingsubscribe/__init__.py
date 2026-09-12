@@ -221,10 +221,10 @@ class SVGPaths:
 
 
 class MediaMissingSubscribe(_PluginBase):
-    plugin_name = "Emby媒体库缺失订阅"
+    plugin_name = "媒体库缺失明细订阅"
     plugin_desc = "检测剧集库缺失的季集与电影合集的缺失电影，明确列出缺失明细，支持自动或手动确认订阅补全"
     plugin_icon = "https://raw.githubusercontent.com/FUJIWARESHINE/MoviePilot-Plugins/main/icons/MediaMissingSubscribe.png"
-    plugin_version = "1.0.0"
+    plugin_version = "1.0.1"
     plugin_author = "FUJIWARESHINE"
     author_url = "https://github.com/FUJIWARESHINE"
     plugin_config_prefix = "mediamissingsubscribe_"

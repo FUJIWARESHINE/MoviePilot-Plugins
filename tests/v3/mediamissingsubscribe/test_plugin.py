@@ -1,4 +1,4 @@
-"""Emby媒体库缺失订阅（V3）合同与行为回归测试。
+"""媒体库缺失明细订阅（V3）合同与行为回归测试。
 
 覆盖三块内容：
 1. V3 合同适配：稳定 SDK 导入、统一媒体身份、API 声明。
@@ -523,7 +523,7 @@ def test_page_shows_empty_state_without_records(plugin_instance):
 
 def test_plugin_metadata_is_v3(plugin_class):
     """V3 专用副本必须是大版本跃迁后的版本号与独立配置前缀。"""
-    assert plugin_class.plugin_version == "2.0.0"
+    assert plugin_class.plugin_version == "2.0.1"
     assert plugin_class.plugin_config_prefix == "mediamissingsubscribe_"
-    assert plugin_class.plugin_name == "Emby媒体库缺失订阅"
+    assert plugin_class.plugin_name == "媒体库缺失明细订阅"
     assert getattr(plugin_class, "_plugin_id", None) == "MediaMissingSubscribe"
