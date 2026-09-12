@@ -99,6 +99,11 @@ MOVIE_STATUS_TEXT: Dict[str, str] = {
 
 MOVIE_POSTER_BASE = "https://image.tmdb.org/t/p/w500"
 
+# 电影合集缺失通知的收敛策略：条目少就直接报片名，条目多就按合集聚合，
+# 只给缺失最多的几个合集 + 其余汇总，避免通知被十几行片名刷屏。
+MOVIE_NOTIFY_INLINE_LIMIT = 3
+MOVIE_NOTIFY_TOP_COLLECTIONS = 3
+
 
 class Icons(Enum):
     STATISTICS = "icon_statistics"
@@ -230,7 +235,7 @@ class MediaMissingSubscribe_me(_PluginBase):
     plugin_name = "媒体库缺失明细订阅"
     plugin_desc = "检测剧集库缺失的季集与电影合集的缺失电影，明确列出缺失明细，支持自动或手动确认订阅补全"
     plugin_icon = "https://raw.githubusercontent.com/FUJIWARESHINE/MoviePilot-Plugins/main/icons/MediaMissingSubscribe_me.png"
-    plugin_version = "1.0.5"
+    plugin_version = "1.0.6"
     plugin_author = "FUJIWARESHINE"
     author_url = "https://github.com/FUJIWARESHINE"
     plugin_config_prefix = "mediamissingsubscribe_me_"
@@ -848,7 +853,7 @@ class MediaMissingSubscribe_me(_PluginBase):
             logger.warning("未获取到媒体服务器")
             return
 
-        new_found: List[str] = []
+        new_found: List[Tuple[str, str]] = []
         # 本次扫描确认已在合集内的 (server, collection_id, tmdb_id)
         present_keys: set = set()
 
@@ -916,23 +921,43 @@ class MediaMissingSubscribe_me(_PluginBase):
         if new_found:
             logger.info(f"电影合集缺失数据获取完成, 新增 {len(new_found)} 部缺失电影")
             if self._movie_notify:
-                text_lines = [f"发现 {len(new_found)} 部合集缺失电影："]
-                for item in new_found[:10]:
-                    text_lines.append(f"· {item}")
-                if len(new_found) > 10:
-                    text_lines.append(f"... 等共 {len(new_found)} 部，请到详情页确认是否订阅")
-                else:
-                    text_lines.append("请到插件详情页确认是否订阅")
                 try:
                     self.post_message(
                         mtype=NotificationType.SiteMessage,
                         title=f"【{self.plugin_name}】",
-                        text="\n".join(text_lines),
+                        text=self.__build_movie_notify_text(new_found),
                     )
                 except Exception as e:
                     logger.error(f"发送电影合集缺失通知失败: {e}")
         else:
             logger.info("电影合集缺失数据获取完成, 无新增缺失")
+
+    @staticmethod
+    def __build_movie_notify_text(new_found: List[Tuple[str, str]]) -> str:
+        """构建简洁的电影合集缺失通知正文。
+
+        条目少时直接报片名；条目多时按合集聚合，只给缺失最多的几个合集 + 其余汇总，
+        避免把十几行片名塞进通知（详情页有完整的逐条列表可看）。
+        """
+        total = len(new_found)
+        if total <= MOVIE_NOTIFY_INLINE_LIMIT:
+            titles = "、".join(title for title, _ in new_found)
+            return f"新增 {total} 部缺失电影：{titles}"
+
+        counter: Dict[str, int] = {}
+        for _, collection_name in new_found:
+            key = collection_name or "未知合集"
+            counter[key] = counter.get(key, 0) + 1
+
+        ranked = sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))
+        top = ranked[:MOVIE_NOTIFY_TOP_COLLECTIONS]
+        rest = ranked[MOVIE_NOTIFY_TOP_COLLECTIONS:]
+
+        lines = [f"新增 {total} 部缺失电影 · {len(counter)} 个合集"]
+        lines.append(" · ".join(f"{name} {count}" for name, count in top))
+        if rest:
+            lines.append(f"其余 {len(rest)} 个合集 {sum(count for _, count in rest)} 部")
+        return "\n".join(lines)
 
     def __process_boxset(
         self,
@@ -941,9 +966,9 @@ class MediaMissingSubscribe_me(_PluginBase):
         user_id: str,
         boxset: dict,
         details: Dict[str, dict],
-    ) -> Tuple[List[str], set]:
+    ) -> Tuple[List[Tuple[str, str]], set]:
         """处理单个 BoxSet：与 TMDB 合集全量片单做差集，把缺失电影写入待处理清单"""
-        new_found: List[str] = []
+        new_found: List[Tuple[str, str]] = []
         present_keys: set = set()
 
         boxset_id = boxset.get("Id")
@@ -1026,7 +1051,7 @@ class MediaMissingSubscribe_me(_PluginBase):
                 "last_check": now_str,
                 "last_status_change": now_str,
             }
-            new_found.append(f"{movie.title}（{boxset_name}）")
+            new_found.append((movie.title or "未知", boxset_name))
             logger.info(
                 f"【{server_name}】发现合集缺失电影: {movie.title}（{movie.year}）, 合集: {boxset_name}"
             )

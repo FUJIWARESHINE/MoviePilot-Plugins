@@ -452,6 +452,38 @@ def test_movie_scan_can_skip_unreleased_movies(plugin_instance):
 
 
 # ================================================================
+# 5.1 通知模板
+# ================================================================
+
+def test_movie_notify_lists_titles_when_few(plugin_instance):
+    """缺失很少时通知直接报片名，不额外加汇总行。"""
+    build = _private(plugin_instance, "build_movie_notify_text")
+
+    text = build([("雷雨", "北京人艺"), ("白鹿原", "北京人艺")])
+
+    assert text == "新增 2 部缺失电影：雷雨、白鹿原"
+
+
+def test_movie_notify_aggregates_when_many(plugin_instance):
+    """缺失很多时按合集聚合，通知最多三行，绝不逐条铺片名。"""
+    build = _private(plugin_instance, "build_movie_notify_text")
+
+    entries = [(f"片名{i}", "北京人艺") for i in range(42)]
+    for idx in range(1, 18):
+        entries.extend([(f"片名{idx}", f"合集{idx:02d}")] * 2)
+
+    text = build(entries)
+    lines = text.split("\n")
+
+    assert len(entries) == 76
+    assert len(lines) == 3, "通知不得超过三行"
+    assert lines[0] == "新增 76 部缺失电影 · 18 个合集"
+    assert "北京人艺 42" in lines[1], "次行给缺失最多的合集及数量"
+    assert lines[2] == "其余 15 个合集 30 部", "第三行汇总其余合集"
+    assert "片名" not in text, "不得把片名逐条铺出来"
+
+
+# ================================================================
 # 6. 详情页渲染
 # ================================================================
 
@@ -589,7 +621,7 @@ def test_page_shows_empty_state_without_records(plugin_instance):
 
 def test_plugin_metadata_is_v3(plugin_class):
     """V3 专用副本必须是大版本跃迁后的版本号与独立配置前缀。"""
-    assert plugin_class.plugin_version == "2.0.5"
+    assert plugin_class.plugin_version == "2.0.6"
     assert plugin_class.plugin_config_prefix == "mediamissingsubscribe_me_"
     assert plugin_class.plugin_name == "媒体库缺失明细订阅"
     assert getattr(plugin_class, "_plugin_id", None) == "MediaMissingSubscribe_me"
