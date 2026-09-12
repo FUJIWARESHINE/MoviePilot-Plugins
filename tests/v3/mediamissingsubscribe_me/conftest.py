@@ -24,10 +24,15 @@ PLUGIN_INIT = REPO_ROOT / "plugins.v3/mediamissingsubscribe_me/__init__.py"
 DataT = TypeVar("DataT")
 
 
+# 本 conftest 装配的 app.* stub 模块，用于在用例前重新激活（见 _reactivate_host_stubs）
+_OWNED_MODULES: list[tuple[str, types.ModuleType]] = []
+
+
 def _module(name: str) -> types.ModuleType:
     """注册并返回占位模块，供 stub 组装成 app.* 包结构。"""
     module = types.ModuleType(name)
     sys.modules[name] = module
+    _OWNED_MODULES.append((name, module))
     return module
 
 
@@ -243,8 +248,17 @@ def _install_stubs() -> None:
     app_sdk_events = _module("app.sdk.events")
 
     class Event:
-        def __init__(self, etype=None):
-            self.event_data: dict = {}
+        """V3 宿主事件对象：``event_type`` 是必填位置参数。
+
+        签名严格对齐宿主 ``app.runtime.events.Event``。此前 stub 把 event_type
+        写成可选（``etype=None``），掩盖了插件里 threading.Event 被宿主 Event 遮蔽
+        的问题——插件在导入期构造 ``Event()`` 会抛 TypeError，宿主随即放弃加载。
+        改成必填后，这类导入期崩溃会在测试收集阶段直接暴露。
+        """
+
+        def __init__(self, event_type, data=None):
+            self.event_type = event_type
+            self.event_data = data or {}
 
     class EventManager:
         def register(self, etype):
@@ -308,6 +322,20 @@ def _load_plugin_module():
 
 
 plugin = _load_plugin_module()
+
+
+@pytest.fixture(autouse=True)
+def _reactivate_host_stubs():
+    """每个用例前把本测试包装配的 app.* stub 重新挂回 sys.modules。
+
+    tests/v3 下每个插件测试包都会注入同名的 app.* stub，后导入的 conftest 会覆盖
+    先导入的，使先导入的包在取 fixture 时拿到别人的 stub（collectionmissing 因此
+    会拿到没有 last_call 的 SubscribeChain）。这里只重新挂回本包首次装配的同名
+    模块对象，类身份保持不变，不影响插件模块里已捕获的枚举与类型引用。
+    """
+    if not _host_available():
+        for name, module in _OWNED_MODULES:
+            sys.modules[name] = module
 
 
 @pytest.fixture()

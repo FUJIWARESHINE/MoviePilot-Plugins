@@ -1,5 +1,10 @@
 from pathlib import Path
-from threading import Event, Lock
+
+# threading.Event 与宿主事件对象 app.core.event.Event 同名。宿主 Event 的
+# event_type 是必填位置参数，一旦被遮蔽，类体里的 Event() 会在导入期直接抛
+# TypeError，导致宿主放弃加载整个插件（表现为「装上了但列表里看不到」）。
+# 因此这里把 threading 的 Event 显式改名，宿主 Event 保持原名用于类型标注。
+from threading import Event as ThreadEvent, Lock
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 import datetime
@@ -225,14 +230,15 @@ class MediaMissingSubscribe_me(_PluginBase):
     plugin_name = "媒体库缺失明细订阅"
     plugin_desc = "检测剧集库缺失的季集与电影合集的缺失电影，明确列出缺失明细，支持自动或手动确认订阅补全"
     plugin_icon = "https://raw.githubusercontent.com/FUJIWARESHINE/MoviePilot-Plugins/main/icons/MediaMissingSubscribe_me.png"
-    plugin_version = "1.0.3"
+    plugin_version = "1.0.4"
     plugin_author = "FUJIWARESHINE"
     author_url = "https://github.com/FUJIWARESHINE"
     plugin_config_prefix = "mediamissingsubscribe_me_"
     plugin_order = 6
     auth_level = 2
 
-    _event = Event()
+    # 停止服务用的中断标志，必须是 threading.Event（见文件头导入说明）
+    _event: ThreadEvent = ThreadEvent()
     _lock = Lock()
 
     # 私有属性

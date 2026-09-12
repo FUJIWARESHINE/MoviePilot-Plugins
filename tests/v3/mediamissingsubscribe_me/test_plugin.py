@@ -8,6 +8,7 @@
 
 import json
 import sys
+import threading
 import types
 from pathlib import Path
 
@@ -67,6 +68,24 @@ def test_source_uses_stable_v3_imports(plugin_class):
         "from app.schemas.types import EventType, MediaSource, MediaType",
     ):
         assert stable in source, f"缺少 V3 稳定导入：{stable}"
+
+
+def test_thread_event_is_not_shadowed_by_host_event(plugin_class):
+    """回归：threading.Event 曾被宿主 Event 遮蔽，导致插件在导入期崩溃。
+
+    宿主 Event 的 ``event_type`` 是必填位置参数，插件类体里的 ``_event = Event()``
+    一旦解析到宿主对象就会抛 TypeError；异常发生在模块导入阶段，宿主 loader 会
+    直接放弃加载整个插件，表现为「安装成功但插件列表里看不到」。此处同时锁定两件
+    事：``_event`` 必须来自 threading，且宿主 Event 确实强制要求 event_type——即
+    conftest 的 stub 没有被重新放宽，否则同类问题会再次逃过测试。
+    """
+    host_event = sys.modules["app.sdk.events"].Event
+
+    assert isinstance(plugin_class._event, threading.Event)
+    assert not isinstance(plugin_class._event, host_event)
+
+    with pytest.raises(TypeError):
+        host_event()
 
 
 def test_api_declares_bear_auth_and_response_model(plugin_instance):
@@ -523,7 +542,7 @@ def test_page_shows_empty_state_without_records(plugin_instance):
 
 def test_plugin_metadata_is_v3(plugin_class):
     """V3 专用副本必须是大版本跃迁后的版本号与独立配置前缀。"""
-    assert plugin_class.plugin_version == "2.0.3"
+    assert plugin_class.plugin_version == "2.0.4"
     assert plugin_class.plugin_config_prefix == "mediamissingsubscribe_me_"
     assert plugin_class.plugin_name == "媒体库缺失明细订阅"
     assert getattr(plugin_class, "_plugin_id", None) == "MediaMissingSubscribe_me"

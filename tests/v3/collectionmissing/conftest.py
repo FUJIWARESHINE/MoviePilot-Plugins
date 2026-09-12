@@ -24,10 +24,15 @@ PLUGIN_INIT = REPO_ROOT / "plugins.v3/collectionmissing/__init__.py"
 DataT = TypeVar("DataT")
 
 
+# 本 conftest 装配的 app.* stub 模块，用于在用例前重新激活（见 _reactivate_host_stubs）
+_OWNED_MODULES: list[tuple[str, types.ModuleType]] = []
+
+
 def _module(name: str) -> types.ModuleType:
     """注册并返回占位模块，供 stub 组装成 app.* 包结构。"""
     module = types.ModuleType(name)
     sys.modules[name] = module
+    _OWNED_MODULES.append((name, module))
     return module
 
 
@@ -268,6 +273,20 @@ def _load_plugin_module():
 
 
 plugin = _load_plugin_module()
+
+
+@pytest.fixture(autouse=True)
+def _reactivate_host_stubs():
+    """每个用例前把本测试包装配的 app.* stub 重新挂回 sys.modules。
+
+    tests/v3 下每个插件测试包都会注入同名的 app.* stub，后导入的 conftest 会覆盖
+    先导入的，使先导入的包在取 fixture 时拿到别人的 stub（collectionmissing 因此
+    会拿到没有 last_call 的 SubscribeChain）。这里只重新挂回本包首次装配的同名
+    模块对象，类身份保持不变，不影响插件模块里已捕获的枚举与类型引用。
+    """
+    if not _host_available():
+        for name, module in _OWNED_MODULES:
+            sys.modules[name] = module
 
 
 @pytest.fixture()
