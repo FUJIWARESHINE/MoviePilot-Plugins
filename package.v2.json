@@ -35,12 +35,13 @@
     "name": "媒体库缺失明细订阅",
     "description": "扫描媒体库中剧集缺失的季集与电影合集（BoxSet）缺失的电影，明确列出缺失的季与集，支持自动或手动确认订阅补全。",
     "labels": "媒体库,查缺,订阅,剧集,电影合集,Emby,Jellyfin",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "icon": "MediaMissingSubscribe_me.png",
     "author": "FUJIWARESHINE",
     "system_version": ">=2.15.0",
     "level": 2,
     "history": {
+      "v1.0.3": "修复「安装成功但插件列表里看不到」的隐患：init_plugin 此前在异常时会向上抛出，宿主随即放弃加载本插件（本仓库 MuxueSignin 曾出现同类问题）。现改为记录完整堆栈并降级为可用状态继续加载，确保插件至少能被宿主与列表识别。同时加固配置读取：cron 为 null 时不再触发 AttributeError，缺失的 no_exist_action 回退默认值；配置加载、存量身份迁移、媒体服务器链能力探测各自兜底；init 开头复位运行期状态，适配热重载与插件分身。功能行为不变。",
       "v1.0.2": "插件 ID 由 MediaMissingSubscribe 更名为 MediaMissingSubscribe_me（目录 mediamissingsubscribe_me），规避与第三方仓库同名插件 ID 冲突导致的插件市场来源争用（同名 ID 会被判定为多来源冲突，表现为列表里不显示或要求显式选源）。因 MoviePilot 插件 ID 只允许 ASCII 字母、数字与下划线，无法使用连字符，故取 _me 而非 -me；配置前缀同步改为 mediamissingsubscribe_me_。本次仅改名，功能行为不变；ID 变化后请按全新插件启用并重新填写配置。",
       "v1.0.1": "重命名插件为「媒体库缺失明细订阅」：原名称「Emby媒体库缺失订阅」与插件市场里既有的 「Emby 缺失订阅」「Emby 电影合集缺失订阅」过于相似，容易认错、不好定位，本次仅调整插件显示名与市场文案；插件 ID（MediaMissingSubscribe）、配置前缀、已保存数据与全部功能行为均保持不变。",
       "v1.0.0": "首个版本：检测剧集库缺失的季集并对接订阅补全，缺失记录按季/集明确列出；新增电影合集（BoxSet）缺失检测与订阅，合集中没有上映日期的电影直接排除不显示；剧集卡片新增可折叠的「缺失季集明细」下拉，逐季列出缺失的具体集数（整季缺失单独标注），默认收起不改变卡片原有排版；详情页顶部支持「剧集缺失 / 电影合集缺失」双视图切换；提供远程命令 /media_missing 立即扫描。"

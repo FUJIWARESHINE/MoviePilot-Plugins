@@ -523,7 +523,7 @@ def test_page_shows_empty_state_without_records(plugin_instance):
 
 def test_plugin_metadata_is_v3(plugin_class):
     """V3 专用副本必须是大版本跃迁后的版本号与独立配置前缀。"""
-    assert plugin_class.plugin_version == "2.0.2"
+    assert plugin_class.plugin_version == "2.0.3"
     assert plugin_class.plugin_config_prefix == "mediamissingsubscribe_me_"
     assert plugin_class.plugin_name == "媒体库缺失明细订阅"
     assert getattr(plugin_class, "_plugin_id", None) == "MediaMissingSubscribe_me"

@@ -3,6 +3,7 @@ from threading import Event, Lock
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 import datetime
+import traceback
 import pytz
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple, TypedDict
@@ -224,7 +225,7 @@ class MediaMissingSubscribe_me(_PluginBase):
     plugin_name = "媒体库缺失明细订阅"
     plugin_desc = "检测剧集库缺失的季集与电影合集的缺失电影，明确列出缺失明细，支持自动或手动确认订阅补全"
     plugin_icon = "https://raw.githubusercontent.com/FUJIWARESHINE/MoviePilot-Plugins/main/icons/MediaMissingSubscribe_me.png"
-    plugin_version = "1.0.2"
+    plugin_version = "1.0.3"
     plugin_author = "FUJIWARESHINE"
     author_url = "https://github.com/FUJIWARESHINE"
     plugin_config_prefix = "mediamissingsubscribe_me_"
@@ -270,6 +271,9 @@ class MediaMissingSubscribe_me(_PluginBase):
 
     def init_plugin(self, config: dict[str, Any] | None = None):
         """初始化插件"""
+        # 热重载与分身隔离：先复位运行期状态，再重建链路
+        self._scheduler = None
+        self._ms_chain_ready = True
         try:
             self._subChain = SubscribeChain()
             self._subOper = SubscribeOper()
@@ -279,7 +283,10 @@ class MediaMissingSubscribe_me(_PluginBase):
             self._msHelper = MediaServerHelper()
 
             if config:
-                self._load_config(config)
+                try:
+                    self._load_config(config)
+                except Exception as e:
+                    logger.error(f"加载配置失败，已回退到默认配置: {str(e)}")
 
             # 从存储中读取当前选中的历史数据类型
             saved_type = self.get_data("current_history_type")
@@ -304,18 +311,23 @@ class MediaMissingSubscribe_me(_PluginBase):
                 self._start_service()
 
         except Exception as e:
-            logger.error(f"初始化插件失败: {str(e)}")
-            raise
+            # 关键：初始化异常绝不能向上抛出——宿主会因此放弃加载本插件，
+            # 典型表现就是「安装成功，但插件列表里看不到」。这里降级为可用并继续，
+            # 具体错误写进日志，便于定位。
+            logger.error(f"初始化插件失败，已降级为可用状态以免宿主放弃加载: {str(e)}")
+            logger.error(traceback.format_exc())
 
     def _load_config(self, config: dict[str, Any]):
         """加载配置"""
         self._enabled = config.get("enabled", False)
         self._onlyonce = config.get("onlyonce", False)
-        self._cron = config.get("cron", "").strip()
+        self._cron = str(config.get("cron") or "").strip()
         self._clear = config.get("clear", False)
         self._only_season_exist = config.get("only_season_exist", True)
         self._only_aired = config.get("only_aired", True)
-        self._no_exist_action = config.get("no_exist_action", NoExistAction.ONLY_HISTORY.value)
+        self._no_exist_action = (
+            config.get("no_exist_action") or NoExistAction.ONLY_HISTORY.value
+        )
         self._auto_skip_finished = config.get("auto_skip_finished", False)
         self._include_s00_season = config.get("include_s00_season", False)
 
