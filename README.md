@@ -139,11 +139,14 @@
 扫描媒体库，找出**剧集缺失的季与集**和**电影合集（BoxSet）缺失的电影**，在插件详情页逐条列出，由你决定是否订阅补全。
 
 > 同时支持 MoviePilot **V2（v2.15.0+）** 与 **V3（v3.0.0+）**。
-> - V2 版本：`v1.0.1`（`plugins.v2/`）
-> - V3 版本：`v2.0.1`（`plugins.v3/`，按官方迁移规范完成 V3 独立适配）
+> - V2 版本：`v1.0.2`（`plugins.v2/mediamissingsubscribe_me/`）
+> - V3 版本：`v2.0.2`（`plugins.v3/mediamissingsubscribe_me/`，按官方迁移规范完成 V3 独立适配）
 >
-> 插件 ID 为 `MediaMissingSubscribe`，与本仓库的 `CollectionMissing`、与插件市场里既有的
-> `EmbyMissingSubscribe`（Emby 缺失订阅）、与原作者已删库的 `GetMissingEpisodes` 均不同，可共存互不冲突。
+> 插件 ID 为 `MediaMissingSubscribe_me`（配置前缀 `mediamissingsubscribe_me_`）。
+> 原名 `MediaMissingSubscribe` 与第三方仓库的插件 ID 撞车，会被 MoviePilot 判定为「多来源冲突」而
+> 不显示或要求显式选源，故本次改为带 `_me` 后缀；MoviePilot 插件 ID 只允许 ASCII 字母、数字与下划线，
+> 因此取 `_me` 而不是 `-me`。与本仓库的 `CollectionMissing`、与插件市场的 `EmbyMissingSubscribe`
+> 均不同，可共存互不冲突。
 
 ### 特性
 

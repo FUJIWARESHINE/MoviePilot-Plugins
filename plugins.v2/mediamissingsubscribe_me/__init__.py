@@ -8,18 +8,18 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple, TypedDict
 
 from app.chain.tmdb import TmdbChain
-from app.schemas.types import EventType, MediaSource, MediaType
+from app.schemas.types import EventType, MediaType
 from app import schemas
 from app.chain.media import MediaChain
 from app.chain.subscribe import SubscribeChain
-from app.chain.mediaserver import MediaServerChain
-from app.db.oper.subscribe import SubscribeOper
+from app.db.subscribe_oper import SubscribeOper
+from app.core.config import settings
+from app.core.event import eventmanager, Event
+from app.log import logger
 from app.plugins import _PluginBase
+from app.chain.mediaserver import MediaServerChain
+from app.helper.mediaserver import MediaServerHelper
 from app.schemas import NotificationType
-from app.sdk.config import settings
-from app.sdk.events import eventmanager, Event
-from app.sdk.logging import logger
-from app.sdk.services import MediaServerHelper
 
 
 class HistoryStatus(Enum):
@@ -92,54 +92,6 @@ MOVIE_STATUS_TEXT: Dict[str, str] = {
 }
 
 MOVIE_POSTER_BASE = "https://image.tmdb.org/t/p/w500"
-
-# 本插件按 TMDB 单源工作：剧集与电影合集的识别、订阅都归属 TMDB 这一内置来源
-RECORD_MEDIA_SOURCE = MediaSource.TMDB
-
-# 插件动作端点的输出模型：显式选择宿主统一 envelope，只回传成功状态与展示文案。
-# get_api() 注册的路由不会被宿主隐式包装，因此必须自己声明与返回结构一致的
-# response_model。
-PluginActionResponse = schemas.Response[dict]
-
-
-def tmdb_media_id(tmdb_id: Any) -> Optional[str]:
-    """把任意来源的 TMDB ID 规范为 V3 媒体身份要求的非空字符串。
-
-    V3 的 media_source 与 media_id 是不可拆分的身份对，空白和字符串 "0" 都不是
-    有效身份，因此这里统一归一化，避免无效 ID 进入订阅链路或插件数据。
-    """
-    if tmdb_id is None:
-        return None
-    media_id = str(tmdb_id).strip()
-    if not media_id or media_id == "0":
-        return None
-    return media_id
-
-
-def resolve_record_identity(record: dict) -> Optional[str]:
-    """读取记录的规范媒体 ID，兼容尚未写入统一身份字段的存量数据。
-
-    迁移顺序遵循官方要求：先验证统一字段，无效时再回退到历史单源字段，并保证
-    可重复执行。
-    """
-    media_id = tmdb_media_id(record.get("media_id"))
-    if media_id:
-        return media_id
-    return tmdb_media_id(record.get("tmdb_id")) or tmdb_media_id(record.get("tmdbid"))
-
-
-def ensure_record_identity(record: dict) -> Optional[str]:
-    """为记录补齐 V3 统一身份字段，成功返回规范媒体 ID，失败返回 None。
-
-    只有取得完整有效身份后才写入新字段，绝不先删旧字段；tmdb_id 作为 TMDB
-    维度的单源辅助字段保留，用于拼接合集记录键与展示。
-    """
-    media_id = resolve_record_identity(record)
-    if not media_id:
-        return None
-    record["media_source"] = RECORD_MEDIA_SOURCE.value
-    record["media_id"] = media_id
-    return media_id
 
 
 class Icons(Enum):
@@ -268,14 +220,14 @@ class SVGPaths:
         return paths.get(icon_name, [])
 
 
-class MediaMissingSubscribe(_PluginBase):
+class MediaMissingSubscribe_me(_PluginBase):
     plugin_name = "媒体库缺失明细订阅"
     plugin_desc = "检测剧集库缺失的季集与电影合集的缺失电影，明确列出缺失明细，支持自动或手动确认订阅补全"
-    plugin_icon = "https://raw.githubusercontent.com/FUJIWARESHINE/MoviePilot-Plugins/main/icons/MediaMissingSubscribe.png"
-    plugin_version = "2.0.1"
+    plugin_icon = "https://raw.githubusercontent.com/FUJIWARESHINE/MoviePilot-Plugins/main/icons/MediaMissingSubscribe_me.png"
+    plugin_version = "1.0.2"
     plugin_author = "FUJIWARESHINE"
     author_url = "https://github.com/FUJIWARESHINE"
-    plugin_config_prefix = "mediamissingsubscribe_"
+    plugin_config_prefix = "mediamissingsubscribe_me_"
     plugin_order = 6
     auth_level = 2
 
@@ -289,10 +241,8 @@ class MediaMissingSubscribe(_PluginBase):
     _tmdbChain: TmdbChain
     _msChain: MediaServerChain
     _msHelper: MediaServerHelper
-    _plugin_id = "MediaMissingSubscribe"
+    _plugin_id = "MediaMissingSubscribe_me"
     _scheduler = None
-    # 运行期能力探测结果：宿主是否提供 MediaServerChain 的剧集枚举接口
-    _ms_chain_ready: bool = True
 
     # 配置属性
     _enabled: bool = False
@@ -345,21 +295,6 @@ class MediaMissingSubscribe(_PluginBase):
             saved_view = self.get_data("current_view")
             if saved_view:
                 self._current_view = saved_view
-
-            # 存量数据迁移：为仅含 tmdbid 的旧记录补齐 V3 统一媒体身份
-            self.__migrate_history_identity()
-
-            # 媒体服务器链能力探测：V3 宿主若未提供 librarys/items/episodes，
-            # 剧集扫描自动回退到原生 Emby / Jellyfin 接口
-            self._ms_chain_ready = all(
-                callable(getattr(self._msChain, _name, None))
-                for _name in ("librarys", "items", "episodes")
-            )
-            if not self._ms_chain_ready:
-                logger.warning(
-                    "宿主未提供 MediaServerChain.librarys/items/episodes，"
-                    "剧集缺失扫描将回退到原生 Emby / Jellyfin 接口"
-                )
 
             # 停止现有任务
             self.stop_service()
@@ -472,104 +407,78 @@ class MediaMissingSubscribe(_PluginBase):
                 "path": "/delete_history",
                 "endpoint": self.delete_history,
                 "methods": ["GET"],
-                "auth": "bear",
-                "response_model": PluginActionResponse,
                 "summary": f"删除 {self.plugin_name} 检查记录",
             },
             {
                 "path": "/set_all_exist_history",
                 "endpoint": self.set_all_exist_history,
                 "methods": ["GET"],
-                "auth": "bear",
-                "response_model": PluginActionResponse,
                 "summary": f"标记 {self.plugin_name} 存在记录",
             },
             {
                 "path": "/add_subscribe_history",
                 "endpoint": self.add_subscribe_history,
                 "methods": ["GET"],
-                "auth": "bear",
-                "response_model": PluginActionResponse,
                 "summary": f"订阅 {self.plugin_name} 缺失记录",
             },
             {
                 "path": "/toggle_skip_history",
                 "endpoint": self.toggle_skip_history,
                 "methods": ["GET"],
-                "auth": "bear",
-                "response_model": PluginActionResponse,
                 "summary": f"切换 {self.plugin_name} 跳过状态",
             },
             {
                 "path": "/set_history_type",
                 "endpoint": self.set_history_type,
                 "methods": ["GET"],
-                "auth": "bear",
-                "response_model": PluginActionResponse,
                 "summary": f"设置 {self.plugin_name} 历史数据类型",
             },
             {
                 "path": "/set_view",
                 "endpoint": self.set_view,
                 "methods": ["GET"],
-                "auth": "bear",
-                "response_model": PluginActionResponse,
                 "summary": f"切换 {self.plugin_name} 详情页视图",
             },
             {
                 "path": "/set_movie_history_type",
                 "endpoint": self.set_movie_history_type,
                 "methods": ["GET"],
-                "auth": "bear",
-                "response_model": PluginActionResponse,
                 "summary": f"设置 {self.plugin_name} 电影合集筛选类型",
             },
             {
                 "path": "/movie_subscribe",
                 "endpoint": self.movie_subscribe,
                 "methods": ["GET"],
-                "auth": "bear",
-                "response_model": PluginActionResponse,
                 "summary": "订阅单部缺失电影",
             },
             {
                 "path": "/movie_ignore",
                 "endpoint": self.movie_ignore,
                 "methods": ["GET"],
-                "auth": "bear",
-                "response_model": PluginActionResponse,
                 "summary": "忽略单部缺失电影",
             },
             {
                 "path": "/movie_restore",
                 "endpoint": self.movie_restore,
                 "methods": ["GET"],
-                "auth": "bear",
-                "response_model": PluginActionResponse,
                 "summary": "恢复单部缺失电影为待处理",
             },
             {
                 "path": "/movie_delete",
                 "endpoint": self.movie_delete,
                 "methods": ["GET"],
-                "auth": "bear",
-                "response_model": PluginActionResponse,
                 "summary": "删除单部电影检查记录",
             },
             {
                 "path": "/movie_subscribe_collection",
                 "endpoint": self.movie_subscribe_collection,
                 "methods": ["GET"],
-                "auth": "bear",
-                "response_model": PluginActionResponse,
                 "summary": "订阅某合集下全部待处理缺失电影",
             },
             {
                 "path": "/movie_ignore_collection",
                 "endpoint": self.movie_ignore_collection,
                 "methods": ["GET"],
-                "auth": "bear",
-                "response_model": PluginActionResponse,
                 "summary": "忽略某合集下全部待处理缺失电影",
             },
         ]
@@ -578,7 +487,7 @@ class MediaMissingSubscribe(_PluginBase):
         if self._enabled and self._cron:
             return [
                 {
-                    "id": "MediaMissingSubscribe",
+                    "id": "MediaMissingSubscribe_me",
                     "name": f"{self.plugin_name}",
                     "trigger": CronTrigger.from_crontab(self._cron),
                     "func": self.__refresh,
@@ -588,7 +497,7 @@ class MediaMissingSubscribe(_PluginBase):
         elif self._enabled:
             return [
                 {
-                    "id": "MediaMissingSubscribe",
+                    "id": "MediaMissingSubscribe_me",
                     "name": f"{self.plugin_name}",
                     "trigger": CronTrigger.from_crontab("0 8 * * *"),
                     "func": self.__refresh,
@@ -638,177 +547,6 @@ class MediaMissingSubscribe(_PluginBase):
         except Exception as e:
             logger.error(f"获取媒体服务器失败: {str(e)}")
             return []
-
-    # ================================================================
-    # 媒体服务器访问：稳定链路优先，原生 Emby / Jellyfin 接口回退
-    # ================================================================
-
-    @staticmethod
-    def __attr(obj: Any, name: str, default: Any = None) -> Any:
-        """兼容对象属性与字典两种返回形态，避免绑定某一版媒体服务器模型。"""
-        if obj is None:
-            return default
-        if isinstance(obj, dict):
-            return obj.get(name, default)
-        return getattr(obj, name, default)
-
-    @staticmethod
-    def __to_int(value: Any) -> Optional[int]:
-        """把任意值转为非负整数（季号 0 合法），失败返回 None。"""
-        if value is None:
-            return None
-        try:
-            number = int(str(value).strip())
-        except (TypeError, ValueError):
-            return None
-        return number if number >= 0 else None
-
-    @classmethod
-    def __item_tmdb_id(cls, item: Any) -> Optional[int]:
-        """从媒体服务器条目提取 TMDB ID。
-
-        V3 条目只暴露统一的 media_source / media_id，V2 条目使用单源字段 tmdbid。
-        两种形态都兼容，且只接受确实来自 TMDB 的身份。
-        """
-        raw_source = cls.__attr(item, "media_source")
-        raw_id = cls.__attr(item, "media_id")
-        if raw_source is not None and raw_id is not None:
-            source_value = getattr(raw_source, "value", raw_source)
-            if str(source_value) == RECORD_MEDIA_SOURCE.value:
-                tmdb_id = cls.__to_int(raw_id)
-                if tmdb_id:
-                    return tmdb_id
-        tmdb_id = cls.__to_int(cls.__attr(item, "tmdbid"))
-        return tmdb_id if tmdb_id else None
-
-    def __get_server_libraries(self, server_name: str, service) -> List[Any]:
-        """获取媒体服务器的媒体库列表（链路优先，异常时回退原生接口）"""
-        if self._ms_chain_ready:
-            try:
-                return list(self._msChain.librarys(server_name) or [])
-            except Exception as e:
-                logger.error(
-                    f"【{server_name}】通过媒体服务器链获取媒体库失败: {e}, 回退原生接口"
-                )
-
-        instance = getattr(service, "instance", None)
-        if instance is None:
-            return []
-        try:
-            return list(instance.get_librarys() or [])
-        except Exception as e:
-            logger.error(f"【{server_name}】读取媒体库列表失败: {e}")
-            return []
-
-    def __get_server_library_items(
-        self, server_name: str, service, library_id: str
-    ) -> List[Any]:
-        """获取媒体库中的剧集条目（链路优先，异常时回退原生接口）"""
-        if self._ms_chain_ready:
-            try:
-                return list(self._msChain.items(server_name, library_id) or [])
-            except Exception as e:
-                logger.error(
-                    f"【{server_name}】通过媒体服务器链获取媒体库条目失败: {e}, 回退原生接口"
-                )
-
-        instance = getattr(service, "instance", None)
-        user_id = self.__attr(instance, "user")
-        if instance is None or not user_id:
-            return []
-
-        prefix = BOXSET_SERVER_URL_PREFIX.get(service.type, "")
-        url = (
-            f"[HOST]{prefix}Users/{user_id}/Items?"
-            f"api_key=[APIKEY]"
-            f"&ParentId={library_id}"
-            f"&IncludeItemTypes=Series"
-            f"&Recursive=true"
-            f"&Fields=Path,ProviderIds"
-            f"&Limit=5000"
-        )
-        items: List[Any] = []
-        try:
-            res = instance.get_data(url=url)
-            if not res:
-                return items
-            data = res.json() or {}
-            for raw in data.get("Items", []) or []:
-                provider_ids = raw.get("ProviderIds") or {}
-                tmdb_str = provider_ids.get("Tmdb") or provider_ids.get("tmdb")
-                items.append({
-                    "item_id": raw.get("Id"),
-                    "item_type": raw.get("Type"),
-                    "title": raw.get("Name"),
-                    "original_title": raw.get("OriginalTitle"),
-                    "year": raw.get("ProductionYear"),
-                    "path": raw.get("Path"),
-                    "library": raw.get("ParentId") or library_id,
-                    "tmdbid": self.__to_int(tmdb_str) or None,
-                })
-        except Exception as e:
-            logger.error(f"【{server_name}】读取媒体库条目失败: {e}")
-        return items
-
-    def __get_server_seasoninfo(
-        self, server_name: str, service, item_id: str
-    ) -> Dict[int, List[int]]:
-        """获取剧集在媒体库中已有的季集信息，返回 {季号: [集号]}"""
-        seasoninfo: Dict[int, List[int]] = {}
-
-        if self._ms_chain_ready:
-            try:
-                for episode_info in self._msChain.episodes(server_name, item_id) or []:
-                    season = self.__to_int(self.__attr(episode_info, "season"))
-                    numbers = sorted(
-                        {
-                            number
-                            for number in (
-                                self.__to_int(e)
-                                for e in (self.__attr(episode_info, "episodes") or [])
-                            )
-                            if number is not None
-                        }
-                    )
-                    if season is not None and numbers:
-                        seasoninfo[season] = numbers
-                return seasoninfo
-            except Exception as e:
-                logger.error(
-                    f"【{server_name}】通过媒体服务器链获取剧集季集失败: {e}, 回退原生接口"
-                )
-
-        instance = getattr(service, "instance", None)
-        user_id = self.__attr(instance, "user")
-        if instance is None or not user_id:
-            return seasoninfo
-
-        prefix = BOXSET_SERVER_URL_PREFIX.get(service.type, "")
-        url = (
-            f"[HOST]{prefix}Users/{user_id}/Items?"
-            f"api_key=[APIKEY]"
-            f"&ParentId={item_id}"
-            f"&IncludeItemTypes=Episode"
-            f"&Recursive=true"
-            f"&Fields=ParentIndexNumber,IndexNumber"
-            f"&Limit=10000"
-        )
-        try:
-            res = instance.get_data(url=url)
-            if not res:
-                return seasoninfo
-            data = res.json() or {}
-            for raw in data.get("Items", []) or []:
-                season = self.__to_int(raw.get("ParentIndexNumber"))
-                episode = self.__to_int(raw.get("IndexNumber"))
-                if season is None or episode is None:
-                    continue
-                seasoninfo.setdefault(season, []).append(episode)
-            for season, episodes in seasoninfo.items():
-                seasoninfo[season] = sorted(set(episodes))
-        except Exception as e:
-            logger.error(f"【{server_name}】读取剧集季集失败: {e}")
-        return seasoninfo
 
     def __get_mediaserver_tv_info(self) -> None:
         """获取媒体库电视剧数据"""
@@ -907,7 +645,7 @@ class MediaMissingSubscribe(_PluginBase):
         logger.debug(f"历史记录数量: {len(details)}")
 
         # 遍历媒体服务器
-        for mediaserver, mediaserver_service in mediaservers.items():
+        for mediaserver in mediaservers:
             if not mediaserver:
                 continue
                 
@@ -919,29 +657,30 @@ class MediaMissingSubscribe(_PluginBase):
             logger.info(f"开始获取媒体库 {mediaserver} 的数据 ...")
 
             item_count = 0
-            librarys = self.__get_server_libraries(mediaserver, mediaserver_service)
-            if not librarys:
-                logger.debug(f"【{mediaserver}】未获取到媒体库列表, 跳过")
+            try:
+                librarys = self._msChain.librarys(mediaserver)
+            except Exception as e:
+                logger.error(f"获取媒体库列表失败: {str(e)}")
                 continue
 
             for library in librarys:
-                library_name = self.__attr(library, "name")
-                library_id = self.__attr(library, "id")
-
                 # 检查媒体库白名单
-                if self._whitelist_librarys and library_name not in self._whitelist_librarys:
-                    logger.debug(f"媒体库 {library_name} 不在白名单内，跳过")
+                if self._whitelist_librarys and library.name not in self._whitelist_librarys:
+                    logger.debug(f"媒体库 {library.name} 不在白名单内，跳过")
                     continue
                     
-                logger.info(f"正在获取 {mediaserver} 媒体库 {library_name} ...")
+                logger.info(f"正在获取 {mediaserver} 媒体库 {library.name} ...")
 
-                if not library_id:
+                if not library.id:
                     logger.debug("未获取到Library ID, 跳过获取缺失集数")
                     continue
 
-                library_items = self.__get_server_library_items(
-                    mediaserver, mediaserver_service, library_id
-                )
+                try:
+                    library_items = self._msChain.items(mediaserver, library.id)
+                except Exception as e:
+                    logger.error(f"获取媒体库项失败: {str(e)}")
+                    continue
+
                 if not library_items:
                     logger.debug("未获取到媒体库items信息, 跳过获取缺失集数")
                     continue
@@ -949,30 +688,12 @@ class MediaMissingSubscribe(_PluginBase):
                 for item in library_items:
                     item_count += 1
 
-                    item_id = self.__attr(item, "item_id")
-                    if not item or not item_id:
+                    if not item or not item.item_id:
                         logger.debug("未获取到Item媒体信息或Item ID, 跳过获取缺失集数")
                         continue
 
-                    # 检查媒体类型：只处理剧集
-                    raw_item_type = self.__attr(item, "item_type")
-                    item_type = (
-                        MediaType.TV.value
-                        if raw_item_type in ["Series", "show"]
-                        else MediaType.MOVIE.value
-                    )
-                    if item_type == MediaType.MOVIE.value:
-                        continue
-
-                    item_tmdbid = self.__item_tmdb_id(item)
-                    item_title = (
-                        self.__attr(item, "title")
-                        or self.__attr(item, "original_title")
-                        or f"ItemID: {item_id}"
-                    )
-                    item_unique_flag = (
-                        f"{mediaserver}_{self.__attr(item, 'library')}_{item_id}_{item_title}"
-                    )
+                    item_title = item.title or item.original_title or f"ItemID: {item.item_id}"
+                    item_unique_flag = f"{mediaserver}_{item.library}_{item.item_id}_{item_title}"
                     
                     # 新增：将本次扫描到的有效电视剧加入集合
                     seen_flags.add(item_unique_flag)
@@ -989,25 +710,26 @@ class MediaMissingSubscribe(_PluginBase):
 
                     logger.info(f"正在获取 {item_title} ...")
 
-                    # 获取季信息（媒体库中已存在的季集）
-                    seasoninfo: Dict[int, List[int]] = {}
-                    if item_tmdbid:
-                        seasoninfo = self.__get_server_seasoninfo(
-                            mediaserver, mediaserver_service, item_id
-                        )
+                    # 检查媒体类型
+                    item_type = MediaType.TV.value if item.item_type in ["Series", "show"] else MediaType.MOVIE.value
+                    if item_type == MediaType.MOVIE.value:
+                        logger.warning(f"【{item_title}】为{MediaType.MOVIE.value}, 跳过")
+                        continue
 
-                    # 准备数据：只取两版媒体服务器模型共有的字段，
-                    # 不依赖 model.dict()，避免绑定某一版 pydantic 序列化接口
-                    item_dict = {
-                        "title": item_title,
-                        "original_title": self.__attr(item, "original_title"),
-                        "year": self.__attr(item, "year"),
-                        "path": self.__attr(item, "path"),
-                        "library": self.__attr(item, "library"),
-                        "tmdbid": item_tmdbid,
-                        "item_type": item_type,
-                        "seasoninfo": seasoninfo,
-                    }
+                    # 获取季信息
+                    seasoninfo = {}
+                    if item_type == MediaType.TV.value and item.tmdbid:
+                        try:
+                            espisodes_info = self._msChain.episodes(mediaserver, item.item_id) or []
+                            for episode_info in espisodes_info:
+                                seasoninfo[episode_info.season] = episode_info.episodes
+                        except Exception as e:
+                            logger.error(f"获取剧集信息失败: {str(e)}")
+
+                    # 准备数据
+                    item_dict = item.dict()
+                    item_dict["seasoninfo"] = seasoninfo
+                    item_dict["item_type"] = item_type
                     logger.debug(f"获到媒体库【{item_title}】数据：{item_dict}")
 
                     # 获取缺失集数信息，传入忽略季列表
@@ -1067,7 +789,7 @@ class MediaMissingSubscribe(_PluginBase):
                             tv_no_exist_info=tv_no_exist_info,
                         )
 
-                logger.info(f"{mediaserver} 媒体库 {library_name} 获取数据完成")
+                logger.info(f"{mediaserver} 媒体库 {library.name} 获取数据完成")
 
         logger.info(f"媒体库缺失集数据获取完成, 已处理媒体数量: {item_count}")
         
@@ -1275,8 +997,6 @@ class MediaMissingSubscribe(_PluginBase):
                 "collection_id": collection_id,
                 "collection_name": boxset_name,
                 "tmdb_id": movie.tmdb_id,
-                "media_source": RECORD_MEDIA_SOURCE.value,
-                "media_id": str(movie.tmdb_id),
                 "title": movie.title or "未知",
                 "year": str(movie.year or ""),
                 "poster_path": movie.poster_path or "",
@@ -1400,9 +1120,7 @@ class MediaMissingSubscribe(_PluginBase):
 
             movie_tmdb_id = int(movie_tmdb_str)
             mediainfo = self._mediaChain.recognize_media(
-                mtype=MediaType.MOVIE,
-                media_source=RECORD_MEDIA_SOURCE,
-                media_id=str(movie_tmdb_id),
+                mtype=MediaType.MOVIE, tmdbid=movie_tmdb_id
             )
             if not mediainfo:
                 return None
@@ -1482,13 +1200,12 @@ class MediaMissingSubscribe(_PluginBase):
         """按记录订阅缺失电影，返回（是否成功, 消息）"""
         title = record.get("title")
         year = str(record.get("year") or "")
-        # 补齐并读取 V3 统一媒体身份（存量记录自动回退 tmdb_id）
-        media_id = ensure_record_identity(record)
-        if not title or not media_id:
-            return False, "记录信息不完整或缺少有效媒体身份"
+        tmdb_id = record.get("tmdb_id")
+        if not title or not tmdb_id:
+            return False, "记录信息不完整"
 
         try:
-            if self._subOper.exists(RECORD_MEDIA_SOURCE, media_id):
+            if self._subOper.exists(tmdbid=tmdb_id):
                 return True, "订阅已存在"
         except Exception as e:
             logger.debug(f"检查电影订阅是否存在失败: {e}")
@@ -1498,8 +1215,7 @@ class MediaMissingSubscribe(_PluginBase):
                 title=title,
                 year=year,
                 mtype=MediaType.MOVIE,
-                media_source=RECORD_MEDIA_SOURCE,
-                media_id=media_id,
+                tmdbid=tmdb_id,
                 exist_ok=True,
                 username=self.plugin_name,
             )
@@ -1541,68 +1257,6 @@ class MediaMissingSubscribe(_PluginBase):
         movie_history["details"] = details
         self.save_data("movie_history", movie_history)
 
-    # ================================================================
-    # 存量数据迁移
-    # ================================================================
-
-    def __migrate_history_identity(self) -> int:
-        """为存量记录补齐 V3 统一媒体身份字段，返回本次发生变更的记录数。
-
-        迁移必须可重复执行：统一字段已有效时只补来源、不改写 ID；只有从历史单源
-        字段 tmdbid / tmdb_id 取得有效身份后才写入新字段，绝不先删除旧数据再保存。
-        找不到有效回填来源时保留原记录，避免为了“清理”而丢数据。
-        """
-        tv_migrated = 0
-        movie_migrated = 0
-
-        # 剧集记录：媒体身份挂在 tv_no_exist_info 上
-        history: dict = self.get_data("history") or {}
-        details = history.get("details") if isinstance(history, dict) else None
-        if isinstance(details, dict) and details:
-            for record in details.values():
-                if not isinstance(record, dict):
-                    continue
-                tv_info = record.get("tv_no_exist_info")
-                if not isinstance(tv_info, dict):
-                    continue
-                if tmdb_media_id(tv_info.get("media_id")):
-                    # 统一身份已有效，仅保证来源字段与当前来源一致
-                    if tv_info.get("media_source") != RECORD_MEDIA_SOURCE.value:
-                        tv_info["media_source"] = RECORD_MEDIA_SOURCE.value
-                        tv_migrated += 1
-                    continue
-                if ensure_record_identity(tv_info):
-                    tv_migrated += 1
-            if tv_migrated:
-                self.save_data("history", history)
-
-        # 电影合集记录：媒体身份直接挂在记录上
-        movie_history: dict = self.get_data("movie_history") or {}
-        movie_details = (
-            movie_history.get("details") if isinstance(movie_history, dict) else None
-        )
-        if isinstance(movie_details, dict) and movie_details:
-            for record in movie_details.values():
-                if not isinstance(record, dict):
-                    continue
-                if tmdb_media_id(record.get("media_id")):
-                    if record.get("media_source") != RECORD_MEDIA_SOURCE.value:
-                        record["media_source"] = RECORD_MEDIA_SOURCE.value
-                        movie_migrated += 1
-                    continue
-                if ensure_record_identity(record):
-                    movie_migrated += 1
-            if movie_migrated:
-                self.save_data("movie_history", movie_history)
-
-        total = tv_migrated + movie_migrated
-        if total:
-            logger.info(
-                f"已为 {total} 条存量记录补齐 V3 统一媒体身份"
-                f"（剧集 {tv_migrated} 条，电影合集 {movie_migrated} 条）"
-            )
-        return total
-
     def __get_item_no_exist_info(
         self,
         item_dict: dict[str, Any],
@@ -1624,8 +1278,6 @@ class MediaMissingSubscribe(_PluginBase):
             return False, tv_no_exist_info
 
         tv_no_exist_info["tmdbid"] = tmdbid
-        # 同步写入 V3 统一媒体身份（media_source 与 media_id 成对）
-        ensure_record_identity(tv_no_exist_info)
 
         mtype = item_dict.get("item_type")
         if not mtype or mtype != MediaType.TV.value:
@@ -1657,8 +1309,7 @@ class MediaMissingSubscribe(_PluginBase):
         try:
             tmdbinfo = self._mediaChain.recognize_media(
                 mtype=MediaType.TV,
-                media_source=RECORD_MEDIA_SOURCE,
-                media_id=str(tmdbid),
+                tmdbid=tmdbid,
             )
         except Exception as e:
             logger.error(f"获取媒体信息失败: {str(e)}")
@@ -1714,9 +1365,7 @@ class MediaMissingSubscribe(_PluginBase):
                         continue
                         
                     # 判断用户是否已经添加订阅
-                    if self._subOper.exists(
-                        RECORD_MEDIA_SOURCE, str(tmdbid), season=season
-                    ):
+                    if self._subOper.exists(tmdbid, None, season=season):
                         logger.info(f"【{title}】第【{season}】季已存在订阅, 跳过")
                         continue
                     
@@ -1760,9 +1409,7 @@ class MediaMissingSubscribe(_PluginBase):
                     logger.debug(f"【{title}】第【{season}】季在媒体库已存在的集数信息: {exist_episode}")
                     
                     # 判断用户是否已经添加订阅
-                    if self._subOper.exists(
-                        RECORD_MEDIA_SOURCE, str(tmdbid), season=season
-                    ):
+                    if self._subOper.exists(tmdbid, None, season=season):
                         logger.info(f"【{title}】第【{season}】季已存在订阅, 跳过")
                         continue
                         
@@ -1972,14 +1619,8 @@ class MediaMissingSubscribe(_PluginBase):
                     logger.info(f"{title_season} 的下载路径替换为: {save_path_replaced}")
                     break
 
-        # V3 统一媒体身份：media_source 与 media_id 必须成对且有效
-        media_id = tmdb_media_id(tmdbid)
-        if not media_id:
-            logger.warning(f"{title_season} 缺少有效 TMDB 媒体身份, 跳过订阅")
-            return False
-
         # 判断用户是否已经添加订阅
-        if self._subOper.exists(RECORD_MEDIA_SOURCE, media_id, season=season):
+        if self._subOper.exists(tmdbid, None, season=season):
             logger.info(f"{title_season} 订阅已存在")
             return True
 
@@ -2001,8 +1642,7 @@ class MediaMissingSubscribe(_PluginBase):
                 title=title,
                 year=year,
                 mtype=MediaType.TV,
-                media_source=RECORD_MEDIA_SOURCE,
-                media_id=media_id,
+                tmdbid=tmdbid,
                 season=season,
                 exist_ok=True,
                 username=self.plugin_name,
@@ -2104,18 +1744,10 @@ class MediaMissingSubscribe(_PluginBase):
             logger.warning(f"unique: {unique} 不在历史记录里")
             return False, historys
 
-    def __check_apikey(self, apikey: Optional[str]) -> bool:
-        """V3 宿主已通过 auth="bear" 完成统一鉴权；apikey 仅作为兼容 V2 页面事件的
-        兜底校验：显式传入时必须与宿主 API_TOKEN 一致，未传入（走 bearer）则放行。
-        """
-        if apikey is None:
-            return True
-        return apikey == settings.API_TOKEN
-
-    def delete_history(self, key: str, apikey: Optional[str] = None) -> PluginActionResponse:
+    def delete_history(self, key: str, apikey: str):
         """删除同步检查记录"""
         logger.info(f"开始删除检查记录: {key}")
-        if not self.__check_apikey(apikey):
+        if apikey != settings.API_TOKEN:
             logger.warning("API密钥错误")
             return schemas.Response(success=False, message="API密钥错误")
             
@@ -2124,7 +1756,7 @@ class MediaMissingSubscribe(_PluginBase):
             logger.warning("未找到检查记录")
             return schemas.Response(success=False, message="未找到检查记录")
 
-        is_success, historys = MediaMissingSubscribe.__remove_history_by_unique(historys, key)
+        is_success, historys = MediaMissingSubscribe_me.__remove_history_by_unique(historys, key)
 
         if is_success:
             logger.info(f"删除检查记录 {key} 成功")
@@ -2134,10 +1766,10 @@ class MediaMissingSubscribe(_PluginBase):
             logger.warning(f"删除检查记录 {key} 失败")
             return schemas.Response(success=False, message="删除失败")
 
-    def add_subscribe_history(self, key: str, apikey: Optional[str] = None) -> PluginActionResponse:
+    def add_subscribe_history(self, key: str, apikey: str):
         """订阅缺失检查记录"""
         logger.info(f"开始订阅检查记录: {key}")
-        if not self.__check_apikey(apikey):
+        if apikey != settings.API_TOKEN:
             logger.warning("API密钥错误")
             return schemas.Response(success=False, message="API密钥错误")
             
@@ -2155,10 +1787,10 @@ class MediaMissingSubscribe(_PluginBase):
             logger.warning(f"添加 {key} 订阅失败")
             return schemas.Response(success=False, message="订阅失败")
 
-    def set_all_exist_history(self, key: str, apikey: Optional[str] = None) -> PluginActionResponse:
+    def set_all_exist_history(self, key: str, apikey: str):
         """标记存在检查记录：将当前缺失的季加入忽略列表，并更新状态为全部存在"""
         logger.info(f"开始标记存在检查记录: {key}")
-        if not self.__check_apikey(apikey):
+        if apikey != settings.API_TOKEN:
             logger.warning("API密钥错误")
             return schemas.Response(success=False, message="API密钥错误")
             
@@ -2200,10 +1832,10 @@ class MediaMissingSubscribe(_PluginBase):
             logger.warning(f"标记存在 {key} 失败")
             return schemas.Response(success=False, message="标记存在失败")
 
-    def toggle_skip_history(self, key: str, apikey: Optional[str] = None) -> PluginActionResponse:
+    def toggle_skip_history(self, key: str, apikey: str):
         """切换跳过状态"""
         logger.info(f"开始切换跳过状态: {key}")
-        if not self.__check_apikey(apikey):
+        if apikey != settings.API_TOKEN:
             logger.warning("API密钥错误")
             return schemas.Response(success=False, message="API密钥错误")
             
@@ -2226,10 +1858,10 @@ class MediaMissingSubscribe(_PluginBase):
             logger.warning(f"切换跳过状态 {key} 失败")
             return schemas.Response(success=False, message="切换跳过状态失败")
 
-    def set_history_type(self, history_type: str, apikey: Optional[str] = None) -> PluginActionResponse:
+    def set_history_type(self, history_type: str, apikey: str):
         """设置历史数据类型"""
         logger.info(f"设置历史数据类型: {history_type}")
-        if not self.__check_apikey(apikey):
+        if apikey != settings.API_TOKEN:
             logger.warning("API密钥错误")
             return schemas.Response(success=False, message="API密钥错误")
         
@@ -2245,10 +1877,10 @@ class MediaMissingSubscribe(_PluginBase):
         logger.info(f"历史数据类型已设置为: {history_type}")
         return schemas.Response(success=True, message="设置成功")
 
-    def set_view(self, view: str, apikey: Optional[str] = None) -> PluginActionResponse:
+    def set_view(self, view: str, apikey: str):
         """切换详情页视图：剧集缺失 / 电影合集缺失"""
         logger.info(f"设置详情页视图: {view}")
-        if not self.__check_apikey(apikey):
+        if apikey != settings.API_TOKEN:
             logger.warning("API密钥错误")
             return schemas.Response(success=False, message="API密钥错误")
 
@@ -2261,10 +1893,10 @@ class MediaMissingSubscribe(_PluginBase):
         self.save_data("current_view", view)
         return schemas.Response(success=True, message="设置成功")
 
-    def set_movie_history_type(self, history_type: str, apikey: Optional[str] = None) -> PluginActionResponse:
+    def set_movie_history_type(self, history_type: str, apikey: str):
         """设置电影合集筛选类型"""
         logger.info(f"设置电影合集筛选类型: {history_type}")
-        if not self.__check_apikey(apikey):
+        if apikey != settings.API_TOKEN:
             logger.warning("API密钥错误")
             return schemas.Response(success=False, message="API密钥错误")
 
@@ -2277,10 +1909,10 @@ class MediaMissingSubscribe(_PluginBase):
         self.save_data("current_movie_history_type", history_type)
         return schemas.Response(success=True, message="设置成功")
 
-    def movie_subscribe(self, key: str, apikey: Optional[str] = None) -> PluginActionResponse:
+    def movie_subscribe(self, key: str, apikey: str):
         """订阅单部缺失电影"""
         logger.info(f"开始订阅缺失电影: {key}")
-        if not self.__check_apikey(apikey):
+        if apikey != settings.API_TOKEN:
             return schemas.Response(success=False, message="API密钥错误")
 
         details = self.__get_movie_details()
@@ -2303,10 +1935,10 @@ class MediaMissingSubscribe(_PluginBase):
             success=False, message=f"{record.get('title')} 订阅失败: {msg}"
         )
 
-    def movie_ignore(self, key: str, apikey: Optional[str] = None) -> PluginActionResponse:
+    def movie_ignore(self, key: str, apikey: str):
         """忽略单部缺失电影"""
         logger.info(f"开始忽略缺失电影: {key}")
-        if not self.__check_apikey(apikey):
+        if apikey != settings.API_TOKEN:
             return schemas.Response(success=False, message="API密钥错误")
 
         details = self.__get_movie_details()
@@ -2319,10 +1951,10 @@ class MediaMissingSubscribe(_PluginBase):
         self.__save_movie_details(details)
         return schemas.Response(success=True, message="已忽略")
 
-    def movie_restore(self, key: str, apikey: Optional[str] = None) -> PluginActionResponse:
+    def movie_restore(self, key: str, apikey: str):
         """恢复单部缺失电影为待处理"""
         logger.info(f"开始恢复缺失电影: {key}")
-        if not self.__check_apikey(apikey):
+        if apikey != settings.API_TOKEN:
             return schemas.Response(success=False, message="API密钥错误")
 
         details = self.__get_movie_details()
@@ -2335,10 +1967,10 @@ class MediaMissingSubscribe(_PluginBase):
         self.__save_movie_details(details)
         return schemas.Response(success=True, message="已恢复为待处理")
 
-    def movie_delete(self, key: str, apikey: Optional[str] = None) -> PluginActionResponse:
+    def movie_delete(self, key: str, apikey: str):
         """删除单部电影检查记录"""
         logger.info(f"开始删除电影检查记录: {key}")
-        if not self.__check_apikey(apikey):
+        if apikey != settings.API_TOKEN:
             return schemas.Response(success=False, message="API密钥错误")
 
         details = self.__get_movie_details()
@@ -2351,10 +1983,10 @@ class MediaMissingSubscribe(_PluginBase):
         self.__save_movie_details(details)
         return schemas.Response(success=True, message="删除成功")
 
-    def movie_subscribe_collection(self, server: str, collection: str, apikey: Optional[str] = None) -> PluginActionResponse:
+    def movie_subscribe_collection(self, server: str, collection: str, apikey: str):
         """批量订阅某合集下全部待处理缺失电影"""
         logger.info(f"开始批量订阅合集 {server} / {collection}")
-        if not self.__check_apikey(apikey):
+        if apikey != settings.API_TOKEN:
             return schemas.Response(success=False, message="API密钥错误")
 
         details = self.__get_movie_details()
@@ -2388,10 +2020,10 @@ class MediaMissingSubscribe(_PluginBase):
             message=f"合集订阅完成：成功 {success_count}，失败 {len(targets) - success_count}",
         )
 
-    def movie_ignore_collection(self, server: str, collection: str, apikey: Optional[str] = None) -> PluginActionResponse:
+    def movie_ignore_collection(self, server: str, collection: str, apikey: str):
         """批量忽略某合集下全部待处理缺失电影"""
         logger.info(f"开始批量忽略合集 {server} / {collection}")
-        if not self.__check_apikey(apikey):
+        if apikey != settings.API_TOKEN:
             return schemas.Response(success=False, message="API密钥错误")
 
         details = self.__get_movie_details()
@@ -2770,7 +2402,7 @@ class MediaMissingSubscribe(_PluginBase):
                 },
                 "events": {
                     "click": {
-                        "api": "plugin/MediaMissingSubscribe/add_subscribe_history",
+                        "api": "plugin/MediaMissingSubscribe_me/add_subscribe_history",
                         "method": "get",
                         "params": {
                             "key": f"{unique}",
@@ -2789,7 +2421,7 @@ class MediaMissingSubscribe(_PluginBase):
                 },
                 "events": {
                     "click": {
-                        "api": "plugin/MediaMissingSubscribe/set_all_exist_history",
+                        "api": "plugin/MediaMissingSubscribe_me/set_all_exist_history",
                         "method": "get",
                         "params": {
                             "key": f"{unique}",
@@ -2808,7 +2440,7 @@ class MediaMissingSubscribe(_PluginBase):
                 },
                 "events": {
                     "click": {
-                        "api": "plugin/MediaMissingSubscribe/toggle_skip_history",
+                        "api": "plugin/MediaMissingSubscribe_me/toggle_skip_history",
                         "method": "get",
                         "params": {
                             "key": f"{unique}",
@@ -2827,7 +2459,7 @@ class MediaMissingSubscribe(_PluginBase):
                 },
                 "events": {
                     "click": {
-                        "api": "plugin/MediaMissingSubscribe/delete_history",
+                        "api": "plugin/MediaMissingSubscribe_me/delete_history",
                         "method": "get",
                         "params": {
                             "key": f"{unique}",
@@ -3205,7 +2837,7 @@ class MediaMissingSubscribe(_PluginBase):
         for icon_name in Icons:
             paths = SVGPaths.get_paths(icon_name)
             if paths:
-                icon_content[icon_name] = MediaMissingSubscribe.__get_svg_content(color, paths)
+                icon_content[icon_name] = MediaMissingSubscribe_me.__get_svg_content(color, paths)
         return icon_content
 
     @staticmethod
@@ -3215,7 +2847,7 @@ class MediaMissingSubscribe(_PluginBase):
         icon_name: Icons,
         history_type: str,
         current_history_type: str,
-        api: str = "plugin/MediaMissingSubscribe/set_history_type",
+        api: str = "plugin/MediaMissingSubscribe_me/set_history_type",
         param_name: str = "history_type",
     ) -> dict[str, Any]:
         # 根据是否选中来设置卡片样式和图标颜色
@@ -3378,7 +3010,7 @@ class MediaMissingSubscribe(_PluginBase):
 
         content = list(
             map(
-                lambda s: MediaMissingSubscribe.__get_historys_statistic_content(
+                lambda s: MediaMissingSubscribe_me.__get_historys_statistic_content(
                     title=str(s["title"]),
                     value=str(s["value"]),
                     icon_name=Icons(s["icon_name"]),
@@ -3609,13 +3241,13 @@ class MediaMissingSubscribe(_PluginBase):
 
         statistics_content = list(
             map(
-                lambda s: MediaMissingSubscribe.__get_historys_statistic_content(
+                lambda s: MediaMissingSubscribe_me.__get_historys_statistic_content(
                     title=str(s["title"]),
                     value=str(s["value"]),
                     icon_name=Icons(s["icon_name"]),
                     history_type=str(s["history_type"]),
                     current_history_type=self._current_movie_history_type,
-                    api="plugin/MediaMissingSubscribe/set_movie_history_type",
+                    api="plugin/MediaMissingSubscribe_me/set_movie_history_type",
                     param_name="history_type",
                 ),
                 data_statistics,
@@ -3669,7 +3301,7 @@ class MediaMissingSubscribe(_PluginBase):
                         },
                         "events": {
                             "click": {
-                                "api": "plugin/MediaMissingSubscribe/movie_subscribe_collection",
+                                "api": "plugin/MediaMissingSubscribe_me/movie_subscribe_collection",
                                 "method": "get",
                                 "params": {
                                     "server": str(server),
@@ -3689,7 +3321,7 @@ class MediaMissingSubscribe(_PluginBase):
                         },
                         "events": {
                             "click": {
-                                "api": "plugin/MediaMissingSubscribe/movie_ignore_collection",
+                                "api": "plugin/MediaMissingSubscribe_me/movie_ignore_collection",
                                 "method": "get",
                                 "params": {
                                     "server": str(server),
@@ -3921,7 +3553,7 @@ class MediaMissingSubscribe(_PluginBase):
                 },
                 "events": {
                     "click": {
-                        "api": f"plugin/MediaMissingSubscribe/{api}",
+                        "api": f"plugin/MediaMissingSubscribe_me/{api}",
                         "method": "get",
                         "params": {"key": f"{key}", "apikey": settings.API_TOKEN},
                     }
@@ -3971,7 +3603,7 @@ class MediaMissingSubscribe(_PluginBase):
                 },
                 "events": {
                     "click": {
-                        "api": "plugin/MediaMissingSubscribe/set_view",
+                        "api": "plugin/MediaMissingSubscribe_me/set_view",
                         "method": "get",
                         "params": {
                             "view": view.value,

@@ -16,12 +16,12 @@ import pytest
 
 def _plugin_module():
     """返回已加载的插件模块。"""
-    return sys.modules["app.plugins.mediamissingsubscribe"]
+    return sys.modules["app.plugins.mediamissingsubscribe_me"]
 
 
 def _private(instance, name: str):
     """按 Python 名称改写规则取出私有方法。"""
-    return getattr(instance, f"_MediaMissingSubscribe__{name}")
+    return getattr(instance, f"_MediaMissingSubscribe_me__{name}")
 
 
 def _find(node, component: str, out=None):
@@ -45,7 +45,7 @@ def _find(node, component: str, out=None):
 
 def test_source_uses_stable_v3_imports(plugin_class):
     """插件不得再使用 V2 的旧导入路径，必须走 app.sdk / app.db.oper。"""
-    source = Path(sys.modules["app.plugins.mediamissingsubscribe"].__file__).read_text(
+    source = Path(sys.modules["app.plugins.mediamissingsubscribe_me"].__file__).read_text(
         encoding="utf-8"
     )
     for legacy in (
@@ -523,7 +523,7 @@ def test_page_shows_empty_state_without_records(plugin_instance):
 
 def test_plugin_metadata_is_v3(plugin_class):
     """V3 专用副本必须是大版本跃迁后的版本号与独立配置前缀。"""
-    assert plugin_class.plugin_version == "2.0.1"
-    assert plugin_class.plugin_config_prefix == "mediamissingsubscribe_"
+    assert plugin_class.plugin_version == "2.0.2"
+    assert plugin_class.plugin_config_prefix == "mediamissingsubscribe_me_"
     assert plugin_class.plugin_name == "媒体库缺失明细订阅"
-    assert getattr(plugin_class, "_plugin_id", None) == "MediaMissingSubscribe"
+    assert getattr(plugin_class, "_plugin_id", None) == "MediaMissingSubscribe_me"

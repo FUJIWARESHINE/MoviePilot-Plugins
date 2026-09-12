@@ -17,9 +17,9 @@ from typing import Any, Generic, Optional, TypeVar
 
 import pytest
 
-# tests/v3/mediamissingsubscribe/conftest.py -> 项目根
+# tests/v3/mediamissingsubscribe_me/conftest.py -> 项目根
 REPO_ROOT = Path(__file__).resolve().parents[3]
-PLUGIN_INIT = REPO_ROOT / "plugins.v3/mediamissingsubscribe/__init__.py"
+PLUGIN_INIT = REPO_ROOT / "plugins.v3/mediamissingsubscribe_me/__init__.py"
 
 DataT = TypeVar("DataT")
 
@@ -299,10 +299,10 @@ def _load_plugin_module():
     if not _host_available():
         _install_stubs()
     spec = importlib.util.spec_from_file_location(
-        "app.plugins.mediamissingsubscribe", PLUGIN_INIT
+        "app.plugins.mediamissingsubscribe_me", PLUGIN_INIT
     )
     module = importlib.util.module_from_spec(spec)
-    sys.modules["app.plugins.mediamissingsubscribe"] = module
+    sys.modules["app.plugins.mediamissingsubscribe_me"] = module
     spec.loader.exec_module(module)
     return module
 
@@ -313,7 +313,7 @@ plugin = _load_plugin_module()
 @pytest.fixture()
 def plugin_class():
     """返回插件主类。"""
-    return plugin.MediaMissingSubscribe
+    return plugin.MediaMissingSubscribe_me
 
 
 @pytest.fixture()
