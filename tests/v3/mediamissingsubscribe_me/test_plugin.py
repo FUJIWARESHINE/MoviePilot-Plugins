@@ -500,7 +500,7 @@ def test_tv_view_renders_missing_season_episode_detail(plugin_instance):
 
 
 def test_movie_view_groups_records_by_collection(plugin_instance):
-    """电影合集视图按合集分组，并提供视图切换与批量按钮。"""
+    """电影合集视图按合集分组、每组折叠收起，并提供视图切换与批量按钮。"""
     instance = plugin_instance
     instance._current_view = _plugin_module().PageViewType.MOVIE.value
     instance.save_data("movie_history", {
@@ -522,13 +522,60 @@ def test_movie_view_groups_records_by_collection(plugin_instance):
         },
     })
 
-    raw = json.dumps(instance.get_page(), ensure_ascii=False)
+    page = instance.get_page()
+    raw = json.dumps(page, ensure_ascii=False)
 
     assert "电影合集缺失" in raw, "缺少视图切换按钮"
-    assert "测试合集 · 缺失 1 部 · emby" in raw, "缺少按合集分组的标题"
+    assert "测试合集" in raw, "缺少按合集分组的标题"
+    assert "缺失 1 部" in raw, "标题栏应带缺失数量"
     assert "007：无暇赴死" in raw
     assert "上映日期: 2021-09-29" in raw
     assert "订阅本合集全部" in raw
+
+    containers = _find(page, "VExpansionPanels")
+    assert len(containers) == 1, "全部合集应挂在同一个折叠容器内"
+    assert containers[0]["props"]["multiple"] is True, "各合集应可独立展开"
+    assert containers[0]["props"]["modelValue"] == [], "合集面板应默认收起"
+    assert _find(containers[0], "VExpansionPanelTitle"), "标题栏必须保留"
+    assert _find(containers[0], "VCard"), "电影卡片必须仍在折叠面板内"
+
+
+def test_movie_view_collapses_each_collection_by_default(plugin_instance):
+    """多个合集时各占一个默认收起的折叠面板，避免缺失电影一次性铺满整页。"""
+    instance = plugin_instance
+    instance._current_view = _plugin_module().PageViewType.MOVIE.value
+
+    details = {}
+    for idx in range(3):
+        details[f"emby:{100 + idx}:{200 + idx}"] = {
+            "server": "emby",
+            "collection_id": 100 + idx,
+            "collection_name": f"合集{idx}",
+            "tmdb_id": 200 + idx,
+            "title": f"电影{idx}",
+            "year": "2020",
+            "poster_path": "",
+            "release_date": "2020-01-01",
+            "vote_average": 7.0,
+            "status": "pending",
+            "last_check": "2026-09-12 10:00:00",
+        }
+    instance.save_data("movie_history", {
+        "last_scan": "2026-09-12 10:00:00",
+        "details": details,
+    })
+
+    page = instance.get_page()
+    containers = _find(page, "VExpansionPanels")
+    panels = _find(page, "VExpansionPanel")
+    texts = _find(page, "VExpansionPanelText")
+
+    assert len(containers) == 1, "全部合集应挂在同一个折叠容器内"
+    assert len(panels) == 3, "每个合集应各占一个折叠面板"
+    assert len(texts) == 3
+    assert containers[0]["props"]["modelValue"] == [], "默认全部收起"
+    for panel in panels:
+        assert _find(panel, "VCard"), "电影卡片必须仍在折叠面板内"
 
 
 def test_page_shows_empty_state_without_records(plugin_instance):
@@ -542,7 +589,7 @@ def test_page_shows_empty_state_without_records(plugin_instance):
 
 def test_plugin_metadata_is_v3(plugin_class):
     """V3 专用副本必须是大版本跃迁后的版本号与独立配置前缀。"""
-    assert plugin_class.plugin_version == "2.0.4"
+    assert plugin_class.plugin_version == "2.0.5"
     assert plugin_class.plugin_config_prefix == "mediamissingsubscribe_me_"
     assert plugin_class.plugin_name == "媒体库缺失明细订阅"
     assert getattr(plugin_class, "_plugin_id", None) == "MediaMissingSubscribe_me"

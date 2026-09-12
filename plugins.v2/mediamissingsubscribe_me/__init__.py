@@ -230,7 +230,7 @@ class MediaMissingSubscribe_me(_PluginBase):
     plugin_name = "媒体库缺失明细订阅"
     plugin_desc = "检测剧集库缺失的季集与电影合集的缺失电影，明确列出缺失明细，支持自动或手动确认订阅补全"
     plugin_icon = "https://raw.githubusercontent.com/FUJIWARESHINE/MoviePilot-Plugins/main/icons/MediaMissingSubscribe_me.png"
-    plugin_version = "1.0.4"
+    plugin_version = "1.0.5"
     plugin_author = "FUJIWARESHINE"
     author_url = "https://github.com/FUJIWARESHINE"
     plugin_config_prefix = "mediamissingsubscribe_me_"
@@ -3297,7 +3297,7 @@ class MediaMissingSubscribe_me(_PluginBase):
             })
             group["records"].append((key, record))
 
-        group_contents: List[dict] = []
+        panel_contents: List[dict] = []
         for group in sorted(groups.values(), key=lambda g: (g["name"] or "")):
             server = group["server"]
             collection_id = group["collection_id"]
@@ -3352,37 +3352,77 @@ class MediaMissingSubscribe_me(_PluginBase):
                     },
                 ]
 
-            group_contents.append({
-                "component": "div",
-                "props": {"class": "mb-4", "style": "width: 100%;"},
+            # 每个合集一个折叠面板，统一挂在下面的 VExpansionPanels 里。
+            # 面板自身的展开/收起由前端即时切换（零刷新），写法对齐本仓库已上线的
+            # CollectionMissing：标题栏给名称/服务器/缺失数量，展开后才出海报与批量按钮。
+            panel_contents.append({
+                "component": "VExpansionPanel",
+                "props": {"class": "mb-2"},
                 "content": [
                     {
-                        "component": "VCardTitle",
-                        "props": {"class": "pt-6 pb-2 px-0 text-base"},
+                        "component": "VExpansionPanelTitle",
                         "content": [
                             {
-                                "component": "span",
-                                "text": f"{group['name']} · 缺失 {len(records)} 部 · {server}",
-                            }
+                                "component": "div",
+                                "props": {
+                                    "class": "d-flex flex-wrap align-center gap-2 w-100 py-1"
+                                },
+                                "content": [
+                                    {
+                                        "component": "span",
+                                        "props": {"class": "text-subtitle-1 font-weight-medium"},
+                                        "text": group["name"],
+                                    },
+                                    {
+                                        "component": "span",
+                                        "props": {"class": "text-caption text-grey-darken-1"},
+                                        "text": str(server),
+                                    },
+                                    {
+                                        "component": "VChip",
+                                        "props": {
+                                            "size": "small",
+                                            "variant": "tonal",
+                                            "color": "primary",
+                                        },
+                                        "text": f"缺失 {len(records)} 部",
+                                    },
+                                ],
+                            },
                         ],
                     },
                     {
-                        "component": "div",
-                        "props": {"class": "pb-2"},
-                        "content": batch_buttons,
-                    },
-                    {
-                        "component": "div",
-                        "props": {"class": "flex flex-row flex-wrap gap-4 items-start"},
+                        "component": "VExpansionPanelText",
                         "content": [
-                            self.__get_movie_history_post_content(key, record)
-                            for key, record in records
+                            {
+                                "component": "div",
+                                "props": {"class": "pb-2"},
+                                "content": batch_buttons,
+                            },
+                            {
+                                "component": "div",
+                                "props": {"class": "flex flex-row flex-wrap gap-4 items-start"},
+                                "content": [
+                                    self.__get_movie_history_post_content(key, record)
+                                    for key, record in records
+                                ],
+                            },
                         ],
                     },
                 ],
             })
 
-        if not group_contents:
+        if panel_contents:
+            # 单个 VExpansionPanels 承载全部合集：multiple 让各合集可独立展开，
+            # modelValue 为空数组表示默认全部收起，避免缺失电影一次性铺满整页。
+            group_contents = [
+                {
+                    "component": "VExpansionPanels",
+                    "props": {"multiple": True, "modelValue": []},
+                    "content": panel_contents,
+                }
+            ]
+        else:
             group_contents = [
                 {
                     "component": "div",
