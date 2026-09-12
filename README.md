@@ -54,12 +54,6 @@
 > 同时支持 MoviePilot **V2（v2.15.0+）** 与 **V3（v3.0.0+）**。
 > - V2 版本：`v1.0.7`（`plugins.v2/mediamissingsubscribe_me/`）
 > - V3 版本：`v2.0.7`（`plugins.v3/mediamissingsubscribe_me/`，按官方迁移规范完成 V3 独立适配）
->
-> 插件 ID 为 `MediaMissingSubscribe_me`（配置前缀 `mediamissingsubscribe_me_`）。
-> 原名 `MediaMissingSubscribe` 与第三方仓库的插件 ID 撞车，会被 MoviePilot 判定为「多来源冲突」而
-> 不显示或要求显式选源，故本次改为带 `_me` 后缀；MoviePilot 插件 ID 只允许 ASCII 字母、数字与下划线，
-> 因此取 `_me` 而不是 `-me`。与本仓库的 `CollectionMissing`、与插件市场的 `EmbyMissingSubscribe`
-> 均不同，可共存互不冲突。
 
 ### 特性
 
@@ -86,7 +80,7 @@
 
 - 详情页顶部可在「剧集缺失」与「电影合集缺失」两个视图间切换
 - 记录持久化，重扫只刷新检查时间，不覆盖你已做出的订阅 / 忽略决定
-- 单条操作：订阅 / 忽略 / 恢复 / 删除；发现新增缺失时发一条系统通知 —— **先列剧集缺失、再列电影合集缺失**，文案自动收敛（剧集一行汇总，电影合集最多三行），不会被片名刷屏；只提示本次新出现的缺失，不重复提醒
+- 单条操作：订阅 / 忽略 / 恢复 / 删除；发现新增缺失时发一条系统通知
 - 剧集侧筛选：最近处理 / 总处理 / 存在缺失 / 已有季缺失 / 未识别 / 全部存在 / 已订阅 / 已跳过 / 已完结
 - 电影合集侧筛选：待处理 / 已订阅 / 已忽略 / 订阅失败 / 所有记录
 - 下载路径替换：把媒体库路径映射为实际下载路径
@@ -131,5 +125,5 @@
 
 ### 致谢
 
-- [andyxu8023/MoviePilot-Plugins](https://github.com/andyxu8023/MoviePilot-Plugins) — `getmissingepisodes` 提供剧集缺失检测与详情页交互机制（原作者已删库）
+- [andyxu8023/MoviePilot-Plugins](https://github.com/andyxu8023/MoviePilot-Plugins) — `getmissingepisodes` 提供剧集缺失检测与详情页交互机制
 - [baranwang/MoviePilot-Plugins](https://github.com/baranwang/MoviePilot-Plugins) — `embymissingsubscribe` 提供 BoxSet 与 TMDB 合集差集链路
