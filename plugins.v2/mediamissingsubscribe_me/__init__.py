@@ -99,10 +99,10 @@ MOVIE_STATUS_TEXT: Dict[str, str] = {
 
 MOVIE_POSTER_BASE = "https://image.tmdb.org/t/p/w500"
 
-# 电影合集缺失通知的收敛策略：条目少就直接报片名，条目多就按合集聚合，
-# 只给缺失最多的几个合集 + 其余汇总，避免通知被十几行片名刷屏。
-MOVIE_NOTIFY_INLINE_LIMIT = 3
-MOVIE_NOTIFY_TOP_COLLECTIONS = 3
+# 缺失通知的收敛阈值：条目少就直接列明细，条目多就聚合成摘要，
+# 避免通知被十几行片名刷屏。
+NOTIFY_INLINE_LIMIT = 3
+NOTIFY_TOP_COLLECTIONS = 3
 
 
 class Icons(Enum):
@@ -165,6 +165,21 @@ def create_tv_no_exist_info(
         status=status,
         status_cn=status_cn,
     )
+
+
+def count_missing_episodes(
+    seasons_episodes_info: Optional[Dict[str, SeasonMissingInfo]]
+) -> int:
+    """统计缺失集数：整季缺失按该季总集数计，部分缺失按实际缺失集数计。"""
+    total = 0
+    for season in (seasons_episodes_info or {}).values():
+        season = season or {}
+        episode_no_exist = season.get("episode_no_exist") or []
+        if episode_no_exist:
+            total += len(episode_no_exist)
+        else:
+            total += season.get("episode_total") or 0
+    return total
 
 
 class HistoryDetail(TypedDict, total=False):
@@ -235,7 +250,7 @@ class MediaMissingSubscribe_me(_PluginBase):
     plugin_name = "媒体库缺失明细订阅"
     plugin_desc = "检测剧集库缺失的季集与电影合集的缺失电影，明确列出缺失明细，支持自动或手动确认订阅补全"
     plugin_icon = "https://raw.githubusercontent.com/FUJIWARESHINE/MoviePilot-Plugins/main/icons/MediaMissingSubscribe_me.png"
-    plugin_version = "1.0.6"
+    plugin_version = "1.0.7"
     plugin_author = "FUJIWARESHINE"
     author_url = "https://github.com/FUJIWARESHINE"
     plugin_config_prefix = "mediamissingsubscribe_me_"
@@ -542,7 +557,7 @@ class MediaMissingSubscribe_me(_PluginBase):
         self.__refresh()
 
     def __refresh(self):
-        """刷新数据：剧集缺失 + 电影合集缺失"""
+        """刷新数据：剧集缺失 + 电影合集缺失，结束后合并成一条通知（先剧集、后电影）"""
         # 统一处理「清理检查记录」开关，同时清空剧集与电影合集记录
         if self._clearflag:
             logger.info("清理检查记录")
@@ -550,16 +565,21 @@ class MediaMissingSubscribe_me(_PluginBase):
             self.save_data("movie_history", "")
             self._clearflag = False
 
+        tv_found: List[Tuple[str, int]] = []
+        movie_found: List[Tuple[str, str]] = []
+
         try:
-            self.__get_mediaserver_tv_info()
+            tv_found = self.__get_mediaserver_tv_info()
         except Exception as e:
             logger.error(f"刷新剧集缺失数据失败: {str(e)}")
 
         if self._enable_movie:
             try:
-                self.__get_mediaserver_movie_info()
+                movie_found = self.__get_mediaserver_movie_info()
             except Exception as e:
                 logger.error(f"刷新电影合集缺失数据失败: {str(e)}")
+
+        self.__notify_new_missing(tv_found, movie_found)
 
     def __get_mediaservers(self):
         """获取媒体服务器"""
@@ -571,8 +591,12 @@ class MediaMissingSubscribe_me(_PluginBase):
             logger.error(f"获取媒体服务器失败: {str(e)}")
             return []
 
-    def __get_mediaserver_tv_info(self) -> None:
-        """获取媒体库电视剧数据"""
+    def __get_mediaserver_tv_info(self) -> List[Tuple[str, int]]:
+        """获取媒体库电视剧数据。
+
+        返回本次扫描**新增**的缺失剧集清单 [(剧名, 缺失集数), ...]，供统一通知使用；
+        已有记录再次被扫到不算新增，避免同一部剧每天重复提醒。
+        """
         logger.info("开始获取媒体库电视剧数据 ...")
         
         # 清理检查记录
@@ -588,6 +612,9 @@ class MediaMissingSubscribe_me(_PluginBase):
         
         # 新增：记录本次扫描到的所有电视剧唯一标识
         seen_flags = set()
+
+        # 本次扫描新增出现的缺失剧集，扫描结束后与电影合集合并成一条通知
+        new_missing: List[Tuple[str, int]] = []
 
         # 添加检查记录
         def __append_history(
@@ -652,6 +679,14 @@ class MediaMissingSubscribe_me(_PluginBase):
                         "skip": auto_skip,
                         "ignored_seasons": [],
                     }
+
+                    # 本次新出现的缺失剧集计入待通知清单（扫描结束后统一通知）
+                    if exist_status in (HistoryStatus.NO_EXIST, HistoryStatus.ADDED_RSS):
+                        info = tv_no_exist_info or {}
+                        new_missing.append((
+                            str(info.get("title") or "未知"),
+                            count_missing_episodes(info.get("season_episode_no_exist_info")),
+                        ))
                 
                 logger.debug(f"添加/更新检查记录: {item_unique_flag}, 状态: {exist_status.value}")
                 self.save_data("history", history_data)
@@ -659,7 +694,7 @@ class MediaMissingSubscribe_me(_PluginBase):
         mediaservers = self.__get_mediaservers()
         if not mediaservers:
             logger.warning("未获取到媒体服务器")
-            return
+            return []
 
         logger.info(f"媒体服务器名称白名单: {self._whitelist_media_servers if self._whitelist_media_servers else '全部'}")
         logger.info(f"媒体库白名单: {self._whitelist_librarys}")
@@ -833,12 +868,14 @@ class MediaMissingSubscribe_me(_PluginBase):
                 logger.debug("历史记录同步完成，无需删除")
         # ==== 结束新增 ====
 
+        return new_missing
+
     # ================================================================
     # 电影合集缺失扫描
     # ================================================================
 
-    def __get_mediaserver_movie_info(self) -> None:
-        """获取媒体库电影合集缺失数据：BoxSet 已有片单 与 TMDB 合集全量片单 做差集"""
+    def __get_mediaserver_movie_info(self) -> List[Tuple[str, str]]:
+        """获取媒体库电影合集缺失数据，返回本次新增缺失的 (片名, 合集名) 清单"""
         logger.info("开始获取媒体库电影合集数据 ...")
 
         movie_history: Dict[str, Any] = self.get_data("movie_history") or {}
@@ -851,7 +888,7 @@ class MediaMissingSubscribe_me(_PluginBase):
         mediaservers = self.__get_mediaservers()
         if not mediaservers:
             logger.warning("未获取到媒体服务器")
-            return
+            return []
 
         new_found: List[Tuple[str, str]] = []
         # 本次扫描确认已在合集内的 (server, collection_id, tmdb_id)
@@ -920,43 +957,72 @@ class MediaMissingSubscribe_me(_PluginBase):
 
         if new_found:
             logger.info(f"电影合集缺失数据获取完成, 新增 {len(new_found)} 部缺失电影")
-            if self._movie_notify:
-                try:
-                    self.post_message(
-                        mtype=NotificationType.SiteMessage,
-                        title=f"【{self.plugin_name}】",
-                        text=self.__build_movie_notify_text(new_found),
-                    )
-                except Exception as e:
-                    logger.error(f"发送电影合集缺失通知失败: {e}")
         else:
             logger.info("电影合集缺失数据获取完成, 无新增缺失")
 
+        return new_found
+
+    def __notify_new_missing(
+        self,
+        tv_found: List[Tuple[str, int]],
+        movie_found: List[Tuple[str, str]],
+    ) -> None:
+        """把本次扫描新增的缺失合并成一条通知发出：先剧集，后电影合集。"""
+        if not self._movie_notify:
+            return
+        if not tv_found and not movie_found:
+            logger.info("本轮扫描无新增缺失，不发送通知")
+            return
+        try:
+            self.post_message(
+                mtype=NotificationType.SiteMessage,
+                title=f"【{self.plugin_name}】",
+                text=self.__build_notify_text(tv_found, movie_found),
+            )
+        except Exception as e:
+            logger.error(f"发送缺失通知失败: {e}")
+
     @staticmethod
-    def __build_movie_notify_text(new_found: List[Tuple[str, str]]) -> str:
-        """构建简洁的电影合集缺失通知正文。
+    def __build_notify_text(
+        tv_found: List[Tuple[str, int]],
+        movie_found: List[Tuple[str, str]],
+    ) -> str:
+        """构建简洁的缺失通知正文：先剧集、后电影合集，各自收敛到极少行。
 
-        条目少时直接报片名；条目多时按合集聚合，只给缺失最多的几个合集 + 其余汇总，
-        避免把十几行片名塞进通知（详情页有完整的逐条列表可看）。
+        剧集：一行汇总（缺失剧集数 + 总集数），不超过 3 部时顺带列出剧名与集数。
+        电影合集：不超过 3 部时直接报片名；否则按合集聚合，最多三行，
+        只给缺失最多的几个合集 + 其余汇总（完整逐条列表在详情页）。
         """
-        total = len(new_found)
-        if total <= MOVIE_NOTIFY_INLINE_LIMIT:
-            titles = "、".join(title for title, _ in new_found)
-            return f"新增 {total} 部缺失电影：{titles}"
+        lines: List[str] = []
 
-        counter: Dict[str, int] = {}
-        for _, collection_name in new_found:
-            key = collection_name or "未知合集"
-            counter[key] = counter.get(key, 0) + 1
+        if tv_found:
+            episode_total = sum(count for _, count in tv_found)
+            tv_line = f"剧集缺失 {len(tv_found)} 部 · 共 {episode_total} 集"
+            if len(tv_found) <= NOTIFY_INLINE_LIMIT:
+                detail = "、".join(f"{title} {count} 集" for title, count in tv_found)
+                tv_line += f"（{detail}）"
+            lines.append(tv_line)
 
-        ranked = sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))
-        top = ranked[:MOVIE_NOTIFY_TOP_COLLECTIONS]
-        rest = ranked[MOVIE_NOTIFY_TOP_COLLECTIONS:]
+        if movie_found:
+            total = len(movie_found)
+            if total <= NOTIFY_INLINE_LIMIT:
+                titles = "、".join(title for title, _ in movie_found)
+                lines.append(f"电影合集缺失 {total} 部：{titles}")
+            else:
+                counter: Dict[str, int] = {}
+                for _, collection_name in movie_found:
+                    key = collection_name or "未知合集"
+                    counter[key] = counter.get(key, 0) + 1
 
-        lines = [f"新增 {total} 部缺失电影 · {len(counter)} 个合集"]
-        lines.append(" · ".join(f"{name} {count}" for name, count in top))
-        if rest:
-            lines.append(f"其余 {len(rest)} 个合集 {sum(count for _, count in rest)} 部")
+                ranked = sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))
+                top = ranked[:NOTIFY_TOP_COLLECTIONS]
+                rest = ranked[NOTIFY_TOP_COLLECTIONS:]
+
+                lines.append(f"电影合集缺失 {total} 部 · {len(counter)} 个合集")
+                lines.append(" · ".join(f"{name} {count}" for name, count in top))
+                if rest:
+                    lines.append(f"其余 {len(rest)} 个合集 {sum(c for _, c in rest)} 部")
+
         return "\n".join(lines)
 
     def __process_boxset(
@@ -2327,7 +2393,8 @@ class MediaMissingSubscribe_me(_PluginBase):
                                         "component": "VSwitch",
                                         "props": {
                                             "model": "movie_notify",
-                                            "label": "发现缺失电影时通知",
+                                            "label": "发现新增缺失时通知",
+                                            "hint": "一条通知同时覆盖剧集与电影合集：先列剧集缺失，再列电影合集缺失；只提示本次新出现的缺失，不重复提醒",
                                         },
                                     }
                                 ],

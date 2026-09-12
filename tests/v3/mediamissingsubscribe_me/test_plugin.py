@@ -290,7 +290,7 @@ def test_tv_scan_reads_unified_identity_from_chain(plugin_instance, media_source
         {"emby": _service(_FakeInstance())}
     )
 
-    _private(instance, "get_mediaserver_tv_info")()
+    new_missing = _private(instance, "get_mediaserver_tv_info")()
 
     details = instance.get_data("history")["details"]
     assert len(details) == 1
@@ -299,6 +299,42 @@ def test_tv_scan_reads_unified_identity_from_chain(plugin_instance, media_source
     assert tv_info["media_id"] == "123"
     assert tv_info["media_source"] == media_source.TMDB.value
     assert tv_info["title"] == "某剧"
+
+    # 本用例的识别链不返回媒体信息，条目被判为「获取失败」；失败项不得进入通知
+    assert new_missing == []
+
+
+def test_tv_scan_reports_new_missing_only_once(plugin_instance, media_source):
+    """识别到季集后：新增缺失必须回传给通知，且重复扫描不重复提醒。"""
+    instance = plugin_instance
+    instance._whitelist_media_servers = []
+    instance._whitelist_librarys = []
+    instance._only_season_exist = True
+    instance._only_aired = True
+    instance._auto_skip_finished = False
+    instance._include_s00_season = False
+    instance._no_exist_action = _plugin_module().NoExistAction.ONLY_HISTORY.value
+    instance._clearflag = False
+    instance._msHelper = sys.modules["app.sdk.services"].MediaServerHelper(
+        {"emby": _service(_FakeInstance())}
+    )
+    # 让识别返回带季集的媒体信息，扫描才会走到「存在缺失」判定
+    instance._mediaChain.media_info = types.SimpleNamespace(
+        seasons={3: 6},
+        status="Returning Series",
+        poster_path="/poster.jpg",
+        vote_average=7.0,
+        last_air_date="2024-01-01",
+    )
+
+    first = _private(instance, "get_mediaserver_tv_info")()
+
+    # 媒体库第 3 季有 E1/E2/E5，TMDB 该季 6 集，故缺 E3/E4/E6 共 3 集
+    assert first == [("某剧", 3)]
+    assert instance.get_data("history")["details"]
+
+    # 再扫一次：已有记录不算新增，避免同一部剧每天重复提醒
+    assert _private(instance, "get_mediaserver_tv_info")() == []
 
 
 def test_tv_scan_falls_back_to_native_api(plugin_instance):
@@ -455,32 +491,76 @@ def test_movie_scan_can_skip_unreleased_movies(plugin_instance):
 # 5.1 通知模板
 # ================================================================
 
-def test_movie_notify_lists_titles_when_few(plugin_instance):
-    """缺失很少时通知直接报片名，不额外加汇总行。"""
-    build = _private(plugin_instance, "build_movie_notify_text")
+def test_notify_lists_details_when_few(plugin_instance):
+    """两边都很少时直接列明细，不额外加汇总行。"""
+    build = _private(plugin_instance, "build_notify_text")
 
-    text = build([("雷雨", "北京人艺"), ("白鹿原", "北京人艺")])
+    text = build([("漫长的季节", 2)], [("雷雨", "北京人艺")])
 
-    assert text == "新增 2 部缺失电影：雷雨、白鹿原"
+    assert text == (
+        "剧集缺失 1 部 · 共 2 集（漫长的季节 2 集）\n"
+        "电影合集缺失 1 部：雷雨"
+    )
 
 
-def test_movie_notify_aggregates_when_many(plugin_instance):
-    """缺失很多时按合集聚合，通知最多三行，绝不逐条铺片名。"""
-    build = _private(plugin_instance, "build_movie_notify_text")
+def test_notify_puts_tv_before_movies(plugin_instance):
+    """剧集在前、电影合集在后；两边各自收敛，绝不逐条铺片名。"""
+    build = _private(plugin_instance, "build_notify_text")
 
-    entries = [(f"片名{i}", "北京人艺") for i in range(42)]
+    movies = [(f"片名{i}", "北京人艺") for i in range(42)]
     for idx in range(1, 18):
-        entries.extend([(f"片名{idx}", f"合集{idx:02d}")] * 2)
+        movies.extend([(f"片名{idx}", f"合集{idx:02d}")] * 2)
+    tv = [(f"剧名{i}", i + 1) for i in range(79)]
 
-    text = build(entries)
+    text = build(tv, movies)
     lines = text.split("\n")
 
-    assert len(entries) == 76
-    assert len(lines) == 3, "通知不得超过三行"
-    assert lines[0] == "新增 76 部缺失电影 · 18 个合集"
-    assert "北京人艺 42" in lines[1], "次行给缺失最多的合集及数量"
-    assert lines[2] == "其余 15 个合集 30 部", "第三行汇总其余合集"
-    assert "片名" not in text, "不得把片名逐条铺出来"
+    assert len(lines) == 4, "剧集一行 + 电影合集三行"
+    assert lines[0] == "剧集缺失 79 部 · 共 3160 集"
+    assert lines[1] == "电影合集缺失 76 部 · 18 个合集"
+    assert "北京人艺 42" in lines[2], "次行给缺失最多的合集及数量"
+    assert lines[3] == "其余 15 个合集 30 部", "再一行汇总其余合集"
+    assert "片名" not in text and "剧名" not in text, "不得把明细逐条铺出来"
+
+
+def test_notify_skips_empty_sections(plugin_instance):
+    """只有电影时不出剧集行，只有剧集时不出电影行。"""
+    build = _private(plugin_instance, "build_notify_text")
+
+    assert build([], [("雷雨", "北京人艺")]) == "电影合集缺失 1 部：雷雨"
+    assert build([("漫长的季节", 2)], []) == "剧集缺失 1 部 · 共 2 集（漫长的季节 2 集）"
+
+
+def test_notify_sends_single_combined_message(plugin_instance):
+    """一次扫描只发一条通知：先剧集、后电影合集；无新增则完全不发。"""
+    instance = plugin_instance
+    instance._movie_notify = True
+    sent: list[dict] = []
+    instance.post_message = lambda **kwargs: sent.append(kwargs)
+
+    notify = _private(instance, "notify_new_missing")
+    notify([("漫长的季节", 2)], [("雷雨", "北京人艺")])
+
+    assert len(sent) == 1, "剧集与电影合集必须合并成一条通知"
+    assert sent[0]["title"] == "【媒体库缺失明细订阅】"
+    assert sent[0]["text"] == (
+        "剧集缺失 1 部 · 共 2 集（漫长的季节 2 集）\n电影合集缺失 1 部：雷雨"
+    )
+
+    notify([], [])
+    assert len(sent) == 1, "无新增缺失时不应发通知"
+
+
+def test_notify_respects_switch(plugin_instance):
+    """关闭开关后不发通知。"""
+    instance = plugin_instance
+    instance._movie_notify = False
+    sent: list[dict] = []
+    instance.post_message = lambda **kwargs: sent.append(kwargs)
+
+    _private(instance, "notify_new_missing")([("某剧", 3)], [("雷雨", "北京人艺")])
+
+    assert sent == []
 
 
 # ================================================================
@@ -621,7 +701,7 @@ def test_page_shows_empty_state_without_records(plugin_instance):
 
 def test_plugin_metadata_is_v3(plugin_class):
     """V3 专用副本必须是大版本跃迁后的版本号与独立配置前缀。"""
-    assert plugin_class.plugin_version == "2.0.6"
+    assert plugin_class.plugin_version == "2.0.7"
     assert plugin_class.plugin_config_prefix == "mediamissingsubscribe_me_"
     assert plugin_class.plugin_name == "媒体库缺失明细订阅"
     assert getattr(plugin_class, "_plugin_id", None) == "MediaMissingSubscribe_me"

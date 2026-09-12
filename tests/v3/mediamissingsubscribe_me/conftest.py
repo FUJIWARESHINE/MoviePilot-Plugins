@@ -85,10 +85,15 @@ def _install_stubs() -> None:
     app_chain_media = _module("app.chain.media")
 
     class MediaChain:
-        """媒体识别链：只接受成对的 media_source 与 media_id。"""
+        """媒体识别链：只接受成对的 media_source 与 media_id。
+
+        默认返回 None（只用来固化调用合同）；需要走到「存在缺失」判定的用例，自行设置
+        ``media_info`` 提供 seasons 等字段即可。
+        """
 
         def __init__(self):
             self.calls: list[dict[str, Any]] = []
+            self.media_info: Any = None
 
         def recognize_media(self, meta=None, mtype=None, media_source=None, media_id=None,
                             episode_group=None, cache=True, share_meta=None, music_type=None):
@@ -100,7 +105,7 @@ def _install_stubs() -> None:
                 "media_source": media_source,
                 "media_id": media_id,
             })
-            return None
+            return self.media_info
 
     app_chain_media.MediaChain = MediaChain
 
@@ -134,16 +139,27 @@ def _install_stubs() -> None:
 
     app_chain_tmdb = _module("app.chain.tmdb")
 
+    class _Episode:
+        """TMDB 剧集对象的最小字段集合：插件只读取 name / air_date / episode_number。"""
+
+        def __init__(self, number: int, air_date: str = "2020-01-01"):
+            self.name = f"第{number}集"
+            self.air_date = air_date
+            self.episode_number = number
+
     class TmdbChain:
+        """TMDB 链：每个季默认 6 集且均已开播，便于构造「存在缺失」场景。"""
+
         def __init__(self):
             self.collection_calls: list[int] = []
+            self.episode_count = 6
 
         def tmdb_collection(self, collection_id: int):
             self.collection_calls.append(collection_id)
             return []
 
         def tmdb_episodes(self, tmdbid: int, season: int, episode_group=None):
-            return []
+            return [_Episode(number) for number in range(1, self.episode_count + 1)]
 
     app_chain_tmdb.TmdbChain = TmdbChain
 
