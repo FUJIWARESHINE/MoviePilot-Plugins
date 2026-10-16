@@ -9,6 +9,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 import datetime
 import traceback
+import unicodedata
 import pytz
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple, TypedDict
@@ -99,10 +100,23 @@ MOVIE_STATUS_TEXT: Dict[str, str] = {
 
 MOVIE_POSTER_BASE = "https://image.tmdb.org/t/p/w500"
 
-# 缺失通知的收敛阈值：条目少就直接列明细，条目多就聚合成摘要，
-# 避免通知被十几行片名刷屏。
-NOTIFY_INLINE_LIMIT = 3
-NOTIFY_TOP_COLLECTIONS = 3
+# 单条明细的字符预算（CJK 按 2、其余按 1 计）：一条通知里每个条目都保证完整，
+# 极端长剧名也不会把整行撑爆或让排版错位。
+NOTIFY_ITEM_BUDGET = 56
+
+# 单条通知的明细行数上限。超出后追加一行「其余 …」，完整明细仍在详情页。
+NOTIFY_ITEM_MAX = 20
+
+# TV 明细里逐条列出的季数上限，避免单剧几十季把一条通知拉成长文。
+NOTIFY_SEASON_INLINE_LIMIT = 6
+
+# 分区之间使用的分隔线。telegramify_markdown 会把 "---" 替换成铅笔 emoji
+# （✏️），并配合整行删除重排段落，因此这里用 em dash 组成的等宽线做纯文本分隔，
+# 三个渠道下都是同一件可见字符，不会变形。
+NOTIFY_DIVIDER = "————"
+
+# 明细条目的前缀：小圆点，两端对齐宽度稳定，TG / QQ / 微信 都按普通字符原样显示。
+NOTIFY_BULLET = "⦁"
 
 # 本插件按 TMDB 单源工作：剧集与电影合集的识别、订阅都归属 TMDB 这一内置来源
 RECORD_MEDIA_SOURCE = MediaSource.TMDB
@@ -298,7 +312,7 @@ class MediaMissingSubscribe_me(_PluginBase):
     plugin_name = "媒体库缺失明细订阅"
     plugin_desc = "检测剧集库缺失的季集与电影合集的缺失电影，明确列出缺失明细，支持自动或手动确认订阅补全"
     plugin_icon = "https://raw.githubusercontent.com/FUJIWARESHINE/MoviePilot-Plugins/main/icons/MediaMissingSubscribe_me.png"
-    plugin_version = "2.0.7"
+    plugin_version = "2.0.9"
     plugin_author = "FUJIWARESHINE"
     author_url = "https://github.com/FUJIWARESHINE"
     plugin_config_prefix = "mediamissingsubscribe_me_"
@@ -340,6 +354,7 @@ class MediaMissingSubscribe_me(_PluginBase):
     # 电影合集相关配置
     _enable_movie: bool = True
     _movie_notify: bool = True
+    _notify_full_snapshot: bool = False
     _movie_skip_unreleased: bool = False
     _movie_libraries: List[str] = []
     _current_movie_history_type: str = MovieHistoryDataType.PENDING.value
@@ -451,6 +466,7 @@ class MediaMissingSubscribe_me(_PluginBase):
         # 电影合集相关配置
         self._enable_movie = config.get("enable_movie", True)
         self._movie_notify = config.get("movie_notify", True)
+        self._notify_full_snapshot = config.get("notify_full_snapshot", False)
         self._movie_skip_unreleased = config.get("movie_skip_unreleased", False)
         self._movie_libraries = self._parse_list_config(
             config.get("movie_libraries", []),
@@ -655,7 +671,12 @@ class MediaMissingSubscribe_me(_PluginBase):
         self.__refresh()
 
     def __refresh(self):
-        """刷新数据：剧集缺失 + 电影合集缺失，结束后合并成一条通知（先剧集、后电影）"""
+        """刷新数据：剧集缺失 + 电影合集缺失，结束后合并成一条通知（先剧集、后电影）
+
+        通知内容取决于「每次扫描推送完整缺失明细」开关：关闭时只报本次新出现的
+        缺失（原有行为）；开启时改为推送当前全部缺失快照，便于首次启用或长时间
+        未扫描后一次性看清整体缺口。
+        """
         # 统一处理「清理检查记录」开关，同时清空剧集与电影合集记录
         if self._clearflag:
             logger.info("清理检查记录")
@@ -677,7 +698,94 @@ class MediaMissingSubscribe_me(_PluginBase):
             except Exception as e:
                 logger.error(f"刷新电影合集缺失数据失败: {str(e)}")
 
+        if self._notify_full_snapshot:
+            tv_found = self.__collect_all_tv_missing(tv_found)
+            movie_found = self.__collect_all_movie_missing(movie_found)
+
         self.__notify_new_missing(tv_found, movie_found)
+
+    def __collect_all_tv_missing(
+        self, new_found: List[Tuple[str, int]]
+    ) -> List[Tuple[str, int]]:
+        """汇总当前全部剧集缺失（含历史遗留记录），供完整快照模式推送。
+
+        只读取状态为「存在缺失」或「已加订阅」且未被标记跳过的记录；已被用户手动
+        标记存在的季不计入。整合时按剧名去重，避免同一部剧在同名媒体库里重复出现。
+        """
+        try:
+            history = self.get_data("history") or {}
+            details = history.get("details") or {}
+        except Exception as e:
+            logger.error(f"读取剧集缺失记录失败，快照回退为仅新增: {e}")
+            return list(new_found)
+
+        aggregated: Dict[str, int] = {}
+        for record in details.values():
+            if not isinstance(record, dict):
+                continue
+            if record.get("skip"):
+                continue
+            if record.get("exist_status") not in (
+                HistoryStatus.NO_EXIST.value,
+                HistoryStatus.ADDED_RSS.value,
+            ):
+                continue
+            info = record.get("tv_no_exist_info") or {}
+            title = str(info.get("title") or "").strip()
+            if not title:
+                continue
+            aggregated[title] = aggregated.get(title, 0) + count_missing_episodes(
+                info.get("season_episode_no_exist_info")
+            )
+
+        if not aggregated:
+            # 记录为空时退回本次扫描结果，宁可少报也不误报成「无缺失」
+            return list(new_found)
+
+        # 本次新增的剧若尚未落库（或无缺失计数），补进来，避免快照漏掉刚发现的项
+        for title, count in new_found:
+            aggregated.setdefault(title, count)
+
+        ordered = sorted(aggregated.items(), key=lambda kv: (-kv[1], kv[0]))
+        logger.info(f"完整快照模式：共汇总 {len(ordered)} 部缺失剧集")
+        return ordered
+
+    def __collect_all_movie_missing(
+        self, new_found: List[Tuple[str, str]]
+    ) -> List[Tuple[str, str]]:
+        """汇总当前全部电影合集缺失（含历史遗留记录），供完整快照模式推送。
+
+        只读取状态为待处理的记录；已订阅、已忽略与订阅失败的记录不再计入待补缺。
+        整合时按「合集 + 片名」去重。
+        """
+        try:
+            movie_history = self.get_data("movie_history") or {}
+            details = movie_history.get("details") or {}
+        except Exception as e:
+            logger.error(f"读取电影合集缺失记录失败，快照回退为仅新增: {e}")
+            return list(new_found)
+
+        aggregated: Dict[Tuple[str, str], None] = {}
+        for record in details.values():
+            if not isinstance(record, dict):
+                continue
+            if record.get("status") != MOVIE_STATUS_PENDING:
+                continue
+            title = str(record.get("title") or "").strip()
+            if not title:
+                continue
+            collection = str(record.get("collection_name") or "").strip() or "未知合集"
+            aggregated[(title, collection)] = None
+
+        if not aggregated:
+            return list(new_found)
+
+        for title, collection in new_found:
+            aggregated.setdefault((title, collection), None)
+
+        ordered = sorted(aggregated.keys(), key=lambda item: (item[1], item[0]))
+        logger.info(f"完整快照模式：共汇总 {len(ordered)} 部缺失电影")
+        return ordered
 
     def __get_mediaservers(self):
         """获取媒体服务器"""
@@ -1252,63 +1360,269 @@ class MediaMissingSubscribe_me(_PluginBase):
         tv_found: List[Tuple[str, int]],
         movie_found: List[Tuple[str, str]],
     ) -> None:
-        """把本次扫描新增的缺失合并成一条通知发出：先剧集，后电影合集。"""
+        """把本次扫描新增的缺失合并成一条通知发出：先剧集，后电影合集。
+
+        通知正文用与渠道无关的写法（``**粗体**`` + 短分隔线 + 圆点明细），
+        由本函数按当前启用的通知渠道分流：Markdown 渠道保留轻量加粗，
+        纯文本渠道改用全角方括号强调，避免星号或反斜杠裸露在正文里。
+        """
         if not self._movie_notify:
             return
         if not tv_found and not movie_found:
             logger.info("本轮扫描无新增缺失，不发送通知")
             return
         try:
+            text = self.__build_notify_text(
+                tv_found,
+                movie_found,
+                markdown=self.__notify_supports_markdown(),
+            )
             self.post_message(
                 mtype=NotificationType.SiteMessage,
                 title=f"【{self.plugin_name}】",
-                text=self.__build_notify_text(tv_found, movie_found),
+                text=text,
             )
         except Exception as e:
             logger.error(f"发送缺失通知失败: {e}")
 
+    def __notify_supports_markdown(self) -> bool:
+        """判断当前通知渠道是否能安全渲染裸 Markdown 强调标记。
+
+        只有 Telegram（MarkdownV2）与 QQ Bot（客户端 Markdown）会解析正文里的
+        ``**``；微信、Slack 等纯文本渠道会把星号原样显示，所以这些渠道改用
+        全角方括号做强调。读取失败时按纯文本处理，宁可不加粗也不留乱码。
+        """
+        try:
+            from app.runtime.settings import get_runtime_setting
+
+            channels = get_runtime_setting("Notifications") or []
+        except Exception as e:
+            logger.debug(f"读取通知渠道配置失败，通知正文按纯文本渲染: {e}")
+            return False
+
+        enabled_types = {
+            str((channel or {}).get("type") or "").strip().lower()
+            for channel in channels
+            if isinstance(channel, dict) and (channel or {}).get("enabled")
+        }
+        return bool(enabled_types & {"telegram", "qqbot"})
+
     @staticmethod
+    def __console_width(text: str) -> int:
+        """计算字符串的显示宽度：CJK 全角字符按 2 计，其余按 1 计。
+
+        用于把通知里的每一条明细压到同一视觉长度，让不同渠道下的换行位置一致。
+        """
+        return sum(
+            2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
+            for char in text
+        )
+
+    @classmethod
+    def __clip(cls, text: str, budget: int) -> str:
+        """按显示宽度截断字符串，超出预算时以省略号结尾。
+
+        只用于极端长的单条名称，正常情况下不会触发截断。
+        """
+        if budget <= 0 or cls.__console_width(text) <= budget:
+            return text
+        ellipsis = "…"
+        room = budget - cls.__console_width(ellipsis)
+        kept: List[str] = []
+        used = 0
+        for char in text:
+            char_width = 2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
+            if used + char_width > room:
+                break
+            kept.append(char)
+            used += char_width
+        return "".join(kept) + ellipsis
+
+    @classmethod
+    def __pad(cls, text: str, budget: int) -> str:
+        """把明细主体补齐到目标显示宽度，保证冒号与集数在视觉上成列对齐。"""
+        return text + " " * max(0, budget - cls.__console_width(text))
+
+    @staticmethod
+    def __strong(text: str, markdown: bool) -> str:
+        """按渠道输出强调文本：Markdown 渠道用粗体，纯文本渠道用全角方括号。"""
+        return f"**{text}**" if markdown else f"【{text}】"
+
+    @staticmethod
+    def __format_episode_numbers(numbers: List[int]) -> str:
+        """把缺失集号压缩成区间写法，例如 1,2,3,7,8 输出为 1-3、7-8。
+
+        整季缺失时调用方不会进入这里，避免把五十集写成一行。
+        """
+        ordered = sorted(int(number) for number in numbers)
+        if not ordered:
+            return ""
+        parts: List[str] = []
+        start = previous = ordered[0]
+        for number in ordered[1:]:
+            if number == previous + 1:
+                previous = number
+                continue
+            parts.append(f"{start}-{previous}" if start != previous else f"{start}")
+            start = previous = number
+        parts.append(f"{start}-{previous}" if start != previous else f"{start}")
+        return "、".join(parts)
+
+    def __tv_missing_records(self, title: str) -> List[dict]:
+        """从剧集检查记录里取出该剧最新的缺失明细，按缺失集数从多到少排序。
+
+        记录里只存了缺失集数，逐季明细在检查阶段的临时字段中，因此这里按剧名回查
+        一次历史记录；取不到明细时通知自动退化为「缺 N 集」的汇总行，不会少报。
+        """
+        try:
+            history = self.get_data("history") or {}
+            details = history.get("details") or {}
+        except Exception as e:
+            logger.debug(f"读取剧集检查记录失败，通知退化为汇总行: {e}")
+            return []
+
+        records: List[dict] = []
+        for record in details.values():
+            if not isinstance(record, dict):
+                continue
+            info = record.get("tv_no_exist_info") or {}
+            if str(info.get("title") or "") != title:
+                continue
+            seasons = []
+            for season_no, season in (info.get("season_episode_no_exist_info") or {}).items():
+                if not isinstance(season, dict):
+                    continue
+                missing = season.get("episode_no_exist") or []
+                seasons.append({
+                    "season": season_no,
+                    "missing": [number for number in missing if number is not None],
+                    "total": season.get("episode_total") or 0,
+                })
+            if seasons:
+                seasons.sort(key=lambda item: (-len(item["missing"]), str(item["season"])))
+                records.append({"seasons": seasons})
+
+        records.sort(
+            key=lambda item: -sum(len(season["missing"]) for season in item["seasons"])
+        )
+        return records
+
+    @classmethod
+    def __render_season_line(cls, season: dict, markdown: bool) -> str:
+        """渲染剧集明细里的一季：整季缺失与部分缺失分开表述，便于一眼区分。"""
+        try:
+            season_no = int(str(season.get("season")))
+        except (TypeError, ValueError):
+            return ""
+        for_watchers = f"第 {season_no} 季"
+        missing = season.get("missing") or []
+        total = season.get("total") or 0
+        if not missing:
+            return f"{for_watchers}：整季缺失（共 {total} 集）"
+        return (
+            f"{for_watchers}：缺 {len(missing)}/{total} 集"
+            f" → {cls.__format_episode_numbers(missing)}"
+        )
+
+    def __render_tv_section(
+        self,
+        tv_found: List[Tuple[str, int]],
+        markdown: bool,
+    ) -> List[str]:
+        """渲染剧集分区：先给「几部几集」的总量，再逐剧逐条列出缺失季与集号。"""
+        episode_total = sum(count for _, count in tv_found)
+        lines = [
+            self.__strong(f"剧集缺失 {len(tv_found)} 部 · 共 {episode_total} 集", markdown),
+            NOTIFY_DIVIDER,
+        ]
+
+        blocks: List[str] = []
+        for title, missing_count in tv_found:
+            records = self.__tv_missing_records(title)
+            seasons = records[0]["seasons"] if records else []
+            heading = f"{self.__strong(title, markdown)}｜缺 {missing_count} 集"
+            if seasons:
+                heading += f"（{len(seasons)} 季）"
+            block = [heading]
+            if not seasons:
+                # 明细临时数据缺失时只保留汇总行，宁可少排版也不漏报
+                blocks.append("\n".join(block))
+                continue
+            for season in seasons[:NOTIFY_SEASON_INLINE_LIMIT]:
+                line = self.__render_season_line(season, markdown)
+                if line:
+                    block.append(f"{NOTIFY_BULLET} {line}")
+            rest = seasons[NOTIFY_SEASON_INLINE_LIMIT:]
+            if rest:
+                rest_episodes = sum(len(season.get("missing") or []) for season in rest)
+                block.append(f"{NOTIFY_BULLET} 其余 {len(rest)} 季共缺 {rest_episodes} 集")
+            blocks.append("\n".join(block))
+
+        lines.append("\n\n".join(blocks))
+        return lines
+
+    def __render_movie_section(
+        self,
+        movie_found: List[Tuple[str, str]],
+        markdown: bool,
+    ) -> List[str]:
+        """渲染电影合集分区：按合集分组，每个合集下逐条列出缺失片名。
+
+        条目按显示宽度补齐到同一列，长片名截断到统一预算，因此同一合集下的
+        片名与年份在 TG / QQ / 微信 三个渠道都能对齐成列。
+        """
+        grouped: Dict[str, List[str]] = {}
+        for title, collection_name in movie_found:
+            grouped.setdefault(collection_name or "未知合集", []).append(title)
+
+        ranked = sorted(grouped.items(), key=lambda item: (-len(item[1]), item[0]))
+        lines = [
+            self.__strong(
+                f"电影合集缺失 {len(movie_found)} 部 · {len(ranked)} 个合集", markdown
+            ),
+            NOTIFY_DIVIDER,
+        ]
+
+        shown = 0
+        for collection_name, titles in ranked:
+            if shown >= NOTIFY_ITEM_MAX:
+                break
+            lines.append(f"{self.__strong(collection_name, markdown)}｜缺 {len(titles)} 部")
+            for title in sorted(titles):
+                if shown >= NOTIFY_ITEM_MAX:
+                    break
+                # 补齐到统一宽度让片名成列；行尾空格会被渠道吞掉，这里主动去掉
+                entry = self.__pad(self.__clip(title, NOTIFY_ITEM_BUDGET), NOTIFY_ITEM_BUDGET)
+                lines.append(f"{NOTIFY_BULLET} {entry}".rstrip())
+                shown += 1
+
+        remaining = len(movie_found) - shown
+        if remaining > 0:
+            lines.append(f"{NOTIFY_BULLET} 其余 {remaining} 部详见插件详情页")
+        return lines
+
     def __build_notify_text(
+        self,
         tv_found: List[Tuple[str, int]],
         movie_found: List[Tuple[str, str]],
+        markdown: bool = False,
     ) -> str:
-        """构建简洁的缺失通知正文：先剧集、后电影合集，各自收敛到极少行。
+        """构建分组明细式通知正文：先剧集、后电影合集，逐条列出且排版成列。
 
-        剧集：一行汇总（缺失剧集数 + 总集数），不超过 3 部时顺带列出剧名与集数。
-        电影合集：不超过 3 部时直接报片名；否则按合集聚合，最多三行，
-        只给缺失最多的几个合集 + 其余汇总（完整逐条列表在详情页）。
+        正文刻意只用「粗体 + 短分隔线 + 圆点明细 + 空格对齐」这几种在 Telegram
+        MarkdownV2、QQ Markdown、微信纯文本下表现一致的写法：不使用列表符号
+        （QQ 会把 ``-`` 渲染成 ``\\-``）、不使用整行 ``---``（会被替换成铅笔
+        emoji 并重排段落）、不使用引号（微信会在空白行插入引号）。
+
+        微信渠道会把连续空行压成单个换行，因此每个分区结尾补一个空字符串：
+        压行后仍能留出分区之间的视觉呼吸位。
         """
-        lines: List[str] = []
-
+        sections: List[List[str]] = []
         if tv_found:
-            episode_total = sum(count for _, count in tv_found)
-            tv_line = f"剧集缺失 {len(tv_found)} 部 · 共 {episode_total} 集"
-            if len(tv_found) <= NOTIFY_INLINE_LIMIT:
-                detail = "、".join(f"{title} {count} 集" for title, count in tv_found)
-                tv_line += f"（{detail}）"
-            lines.append(tv_line)
-
+            sections.append(self.__render_tv_section(tv_found, markdown) + [""])
         if movie_found:
-            total = len(movie_found)
-            if total <= NOTIFY_INLINE_LIMIT:
-                titles = "、".join(title for title, _ in movie_found)
-                lines.append(f"电影合集缺失 {total} 部：{titles}")
-            else:
-                counter: Dict[str, int] = {}
-                for _, collection_name in movie_found:
-                    key = collection_name or "未知合集"
-                    counter[key] = counter.get(key, 0) + 1
-
-                ranked = sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))
-                top = ranked[:NOTIFY_TOP_COLLECTIONS]
-                rest = ranked[NOTIFY_TOP_COLLECTIONS:]
-
-                lines.append(f"电影合集缺失 {total} 部 · {len(counter)} 个合集")
-                lines.append(" · ".join(f"{name} {count}" for name, count in top))
-                if rest:
-                    lines.append(f"其余 {len(rest)} 个合集 {sum(c for _, c in rest)} 部")
-
-        return "\n".join(lines)
+            sections.append(self.__render_movie_section(movie_found, markdown))
+        return "\n".join("\n".join(section) for section in sections)
 
     def __process_boxset(
         self,
@@ -2767,9 +3081,23 @@ class MediaMissingSubscribe_me(_PluginBase):
                                     {
                                         "component": "VSwitch",
                                         "props": {
+                                            "model": "notify_full_snapshot",
+                                            "label": "每次推送完整缺失明细",
+                                            "hint": "开启：每次扫描都把当前全部缺失（含历史遗留记录）推送给你，适合首次启用后一次性看清整体缺口；关闭：只提示本次新出现的缺失，不重复提醒（推荐日常使用）",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
                                             "model": "movie_notify",
                                             "label": "发现新增缺失时通知",
-                                            "hint": "一条通知同时覆盖剧集与电影合集：先列剧集缺失，再列电影合集缺失；只提示本次新出现的缺失，不重复提醒",
+                                            "hint": "一条通知同时覆盖剧集与电影合集：先列剧集缺失，再列电影合集缺失",
                                         },
                                     }
                                 ],
@@ -2869,6 +3197,7 @@ class MediaMissingSubscribe_me(_PluginBase):
             "whitelist_librarys": [],
             "enable_movie": True,
             "movie_notify": True,
+            "notify_full_snapshot": False,
             "movie_skip_unreleased": False,
             "movie_libraries": [],
         }
