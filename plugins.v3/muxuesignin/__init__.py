@@ -25,12 +25,13 @@ from urllib.parse import urljoin
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from app.core.config import settings
-from app.core.event import eventmanager, Event
-from app.db.site_oper import SiteOper
-from app.log import logger
+from app.db.oper.site import SiteOper
 from app.plugins import _PluginBase
-from app.schemas.types import EventType, NotificationType
+from app.schemas import NotificationType
+from app.schemas.types import EventType
+from app.sdk.config import settings
+from app.sdk.events import eventmanager, Event
+from app.sdk.logging import logger
 from app.utils.http import RequestUtils
 
 
@@ -110,7 +111,7 @@ class MuxueSignin(_PluginBase):
     plugin_name = "慕雪自动签到"
     plugin_desc = "自动签到慕雪阁、Depth Studio、AGSVPT、PTzone 站点，Cookie 从站点管理读取"
     plugin_icon = "MuxueSignin.png"
-    plugin_version = "1.2.4"
+    plugin_version = "2.0.0"
     plugin_author = "FUJIWARESHINE"
     plugin_config_prefix = "muxuesignin_"
     plugin_order = 21

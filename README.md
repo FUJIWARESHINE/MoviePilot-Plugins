@@ -3,7 +3,7 @@
 
 自动签到慕雪阁、Depth Studio、AGSVPT、PTzone 四个站点的 PT 签到插件。Cookie 直接从 MoviePilot「站点管理」读取，不在插件内另行配置。
 
-> 适用于 MoviePilot **v2.15.0+**。
+> 适用于 MoviePilot **v3.0.0+**。本仓库仅提供 V3 插件（`plugins.v3/` + `package.v3.json`）。
 
 
 ### 特性
@@ -61,9 +61,8 @@
 
 扫描媒体库，找出**剧集缺失的季与集**和**电影合集（BoxSet）缺失的电影**，在插件详情页逐条列出，由你决定是否订阅补全。
 
-> 同时支持 MoviePilot **V2（v2.15.0+）** 与 **V3（v3.0.0+）**。
-> - V2 版本：`v1.0.7`（`plugins.v2/mediamissingsubscribe_me/`）
-> - V3 版本：`v2.0.7`（`plugins.v3/mediamissingsubscribe_me/`，按官方迁移规范完成 V3 独立适配）
+> 适用于 MoviePilot **V3（v3.0.0+）**。
+> - 当前版本：`v2.0.7`（`plugins.v3/mediamissingsubscribe_me/`，按官方迁移规范完成 V3 独立适配）
 
 ### 特性
 
